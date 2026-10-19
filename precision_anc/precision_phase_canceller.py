@@ -40,7 +40,8 @@ from scipy import signal
 # ============================================================================
 FS = 48000                          # 48,000 Hz precision sample rate (1 sample = 20.833 us)
 TEMP_CELSIUS = 22.0                 # Room/outdoor air temperature (C)
-C_SOUND = 331.3 + 0.606 * TEMP_CELSIUS  # Exact speed of sound (344.632 m/s at 22 C)
+# Speed of sound in dry air, ideal gas (same formula as tools/timing_model.py); humidity ignored.
+C_SOUND = math.sqrt(1.4 * 8.314462618 * (TEMP_CELSIUS + 273.15) / 0.0289647)   # 344.4 m/s at 22 C
 
 DEFAULT_MIC_TO_SPK_M = 0.350        # 35.0 cm (0.350 m) from Outdoor Mic to Speaker
 DEFAULT_HW_DAC_DELAY_US = 12.5      # Hardware DAC + Analog Amp propagation delay (us)

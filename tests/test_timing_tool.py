@@ -74,26 +74,78 @@ def run(argv, dev=None):
 
 
 class ModelTests(unittest.TestCase):
-    def test_original_rc_delay_matches_hand_calculation(self):
-        d_in, d_out, _ = tm.PRESETS["original-rc"]
-        self.assertAlmostEqual(d_in * 1e3, 0.99, places=3)     # 3RC
-        self.assertAlmostEqual(d_out * 1e3, 0.33, places=3)    # RC
+    def test_speed_of_sound(self):
+        self.assertAlmostEqual(tm.speed_of_sound(20.0), 343.23, places=1)
+        self.assertAlmostEqual(tm.speed_of_sound(0.0), 331.3, delta=0.05)
 
-    def test_butterworth_delay(self):
-        self.assertAlmostEqual(tm.butterworth2_delay_s(1000.0) * 1e3, 0.2251, places=3)
+    def test_filter_delays_match_hand_calculation(self):
+        in_f, out_f = tm.PRESETS["original-rc"]
+        self.assertAlmostEqual(in_f.dc_delay_s * 1e6, 990.0, places=6)     # 3RC, R=1.5k, C=220n
+        self.assertAlmostEqual(out_f.dc_delay_s * 1e6, 330.0, places=6)    # RC
+        b = tm.PRESETS["butterworth-1k"][0]
+        self.assertAlmostEqual(b.dc_delay_s * 1e6, 225.079, places=2)      # sqrt(2)/(2 pi 1000)
 
-    def test_head_start_is_ref_to_speaker_when_collinear(self):
-        self.assertAlmostEqual(tm.head_start_s(0.35, 0.25) * 1e3, 0.35 / 343.0 * 1e3, places=6)
+    def test_ladder_minus_3db_frequency(self):
+        lad = tm.PRESETS["original-rc"][0]
+        self.assertAlmostEqual(lad.fc_hz, 180.49, places=2)
+        self.assertAlmostEqual(lad.gain_db(lad.fc_hz), -3.0103, places=3)
+        rc = tm.PRESETS["rc1-3k3-10n"][0]
+        self.assertAlmostEqual(rc.gain_db(rc.fc_hz), -3.0103, places=3)
+        bw = tm.PRESETS["butterworth-1k"][0]
+        self.assertAlmostEqual(bw.gain_db(1000.0), -3.0103, places=3)
 
-    def test_original_circuit_has_negative_margin_butterworth_positive(self):
-        d_in, d_out, _ = tm.PRESETS["original-rc"]
-        bad = tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)
-        self.assertFalse(bad["causal"])
-        self.assertAlmostEqual(bad["margin_s"] * 1e3, -0.425, places=2)
-        d_in, d_out, _ = tm.PRESETS["butterworth-1k"]
-        good = tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)
-        self.assertTrue(good["causal"])
-        self.assertAlmostEqual(good["margin_s"] * 1e3, 0.445, places=2)
+    def test_group_delay_is_largest_at_dc(self):
+        """Numerically check that the DC delay is the maximum for the 1-pole RC (phase = -atan(w tau))."""
+        import math
+        tau = 33e-6
+        def gd(f):
+            w = 2 * math.pi * f
+            return tau / (1 + (w * tau) ** 2)
+        self.assertGreater(gd(0.0), gd(300.0))
+        self.assertAlmostEqual(gd(0.0), tau)
+
+    def test_band_residual_matches_numerical_integration(self):
+        import math
+        f1, f2, tau, g = 70.0, 300.0, 425.3e-6, 0.9
+        n = 20000
+        acc = 0.0
+        for i in range(n):
+            f = f1 + (f2 - f1) * (i + 0.5) / n
+            acc += abs(1 - g * complex(math.cos(2 * math.pi * f * tau), -math.sin(2 * math.pi * f * tau))) ** 2
+        self.assertAlmostEqual(tm.band_residual_db(f1, f2, tau, g), 10 * math.log10(acc / n), places=4)
+        self.assertLess(tm.band_residual_db(f1, f2, 0.0, 1.0), -250)       # perfect: zero by construction
+
+    def test_unknown_terms_are_never_guessed(self):
+        in_f, out_f = tm.PRESETS["butterworth-1k"]
+        b = tm.compute_budget(in_filter=in_f, out_filter=out_f)
+        self.assertFalse(b["complete"])
+        self.assertIsNone(b["margin_s"])
+        self.assertIsNone(b["d_min_m"])
+        self.assertIsNone(b["causal"])                                      # undetermined
+        self.assertEqual(len(b["missing"]), 3)
+        self.assertAlmostEqual(b["margin_upper_bound_s"] * 1e6, 444.6, delta=0.1)
+
+    def test_negative_bound_is_definite(self):
+        in_f, out_f = tm.PRESETS["original-rc"]
+        b = tm.compute_budget(in_filter=in_f, out_filter=out_f)
+        self.assertIs(b["causal"], False)                                   # unknown terms can only add delay
+        self.assertAlmostEqual(b["margin_upper_bound_s"] * 1e6, -425.3, delta=0.1)
+        self.assertAlmostEqual(b["d_min_lower_bound_m"] * 100, 49.60, delta=0.01)
+
+    def test_complete_budget_gives_exact_numbers(self):
+        in_f, out_f = tm.PRESETS["butterworth-1k"]
+        b = tm.compute_budget(in_filter=in_f, out_filter=out_f, isr_s=12e-6, dac_settle_s=5e-6, amp_s=5e-6)
+        self.assertTrue(b["complete"])
+        self.assertIs(b["causal"], True)
+        total = 2 * in_f.dc_delay_s + 125e-6 + 22e-6
+        self.assertAlmostEqual(b["known_total_s"], total, places=12)
+        self.assertAlmostEqual(b["d_min_m"], b["c_m_s"] * total, places=12)
+        self.assertAlmostEqual(b["margin_s"], b["head_start_s"] - total, places=12)
+
+    def test_alias_report_warns_when_cutoff_above_nyquist(self):
+        bw = tm.PRESETS["butterworth-1k"][0]
+        self.assertTrue(any("WARNING" in l for l in tm.anti_alias_report(bw, 1500.0)))
+        self.assertFalse(any("WARNING" in l for l in tm.anti_alias_report(bw, 4000.0)))
 
 
 class ToolTests(unittest.TestCase):
@@ -103,32 +155,54 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(kv["state"], "ACTIVE")
         self.assertEqual(kv["n"], 5.0)
 
-    def test_budget_command_exit_codes(self):
+    def test_budget_exit_codes(self):
         code, out = run(["budget", "--preset", "original-rc"])
         self.assertEqual(code, 2)
-        self.assertIn("must PREDICT", out)
-        code, out = run(["budget", "--preset", "butterworth-1k", "--isr-us", "12"])
-        self.assertEqual(code, 0)
-        self.assertIn("reacts in time", out)
+        self.assertIn("at least", out)
+        code, out = run(["budget", "--preset", "butterworth-1k"])
+        self.assertEqual(code, 3)                                           # undetermined, not a pass
+        self.assertIn("NOT SUPPLIED", out)
+        self.assertIn("undetermined", out)
+        code, out = run(["budget", "--preset", "butterworth-1k", "--isr-us", "12",
+                         "--dac-settle-us", "5", "--amp-us", "5"])
+        self.assertEqual(code, 0, out)
+        self.assertIn("all terms supplied", out)
+        self.assertNotIn("NOT SUPPLIED:", out)
 
-    def test_measure_good_isr(self):
+    def test_json_marks_unsupplied(self):
+        import json
+        code, out = run(["budget", "--preset", "rc1-3k3-10n", "--fs", "48000", "--json"])
+        data = json.loads(out)
+        status = {t["name"]: t["status"] for t in data["terms"]}
+        self.assertEqual(status["ISR (ADC + maths + SPI write)"], "NOT SUPPLIED")
+        self.assertIsNone(data["margin_s"])
+
+    def test_measure_good_isr_but_unknown_terms_is_undetermined(self):
         dev = FakeDevice([ACTIVE_OK])
         code, out = run(["measure", "--port", "x", "--seconds", "0", "--preset", "butterworth-1k"], dev)
-        self.assertEqual(code, 0, out)
-        self.assertIn("worst   12.000 us", out)
+        self.assertEqual(code, 3, out)
+        self.assertIn("worst case 12.000 us", out)
         self.assertEqual(dev.sent, ["?timing", "?timing"])
+
+    def test_measure_with_all_terms_passes(self):
+        dev = FakeDevice([ACTIVE_OK])
+        code, out = run(["measure", "--port", "x", "--seconds", "0", "--preset", "butterworth-1k",
+                         "--dac-settle-us", "5", "--amp-us", "5"], dev)
+        self.assertEqual(code, 0, out)
+        self.assertIn("measured, worst case", out)
 
     def test_measure_flags_overruns(self):
         dev = FakeDevice([ACTIVE_OVERRUN])
-        code, out = run(["measure", "--port", "x", "--seconds", "0", "--preset", "butterworth-1k"], dev)
+        code, out = run(["measure", "--port", "x", "--seconds", "0", "--preset", "butterworth-1k",
+                         "--dac-settle-us", "5", "--amp-us", "5"], dev)
         self.assertEqual(code, 2)
         self.assertIn("samples are being lost", out)
 
-    def test_measure_with_original_filters_fails_budget_even_if_isr_is_fine(self):
+    def test_measure_with_original_filters_fails(self):
         dev = FakeDevice([ACTIVE_OK])
         code, out = run(["measure", "--port", "x", "--seconds", "0", "--preset", "original-rc"], dev)
         self.assertEqual(code, 2)
-        self.assertIn("must PREDICT", out)
+        self.assertIn("at least", out)
 
     def test_measure_with_no_samples(self):
         dev = FakeDevice([])

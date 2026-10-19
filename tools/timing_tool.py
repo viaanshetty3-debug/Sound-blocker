@@ -18,12 +18,20 @@ Examples
   python3 tools/timing_tool.py measure --port /dev/cu.usbmodem1234 --preset butterworth-1k
   python3 tools/timing_tool.py set --port /dev/cu.usbmodem1234 mu 0.012
 
-`measure` exits with status 0 if the ISR never overran and the margin is >= 0, 2 otherwise.
+Strict bookkeeping (see tools/timing_model.py): a delay term that was not supplied is never
+guessed. Until the ISR time, the DAC settling time and the amplifier delay are supplied, the
+result is a BOUND (margin <= x, break-even distance >= y), not a single number.
+
+Exit status of `budget` and `measure`:
+  0  every term supplied, margin >= 0, no ISR overrun
+  2  margin is negative (already true with the missing terms at zero), or the ISR overran
+  3  undetermined: terms are still missing and the bound does not rule the design out
+
 Needs `pip install pyserial` for the serial commands (not for `budget`).
 
-What `measure` can NOT tell you: the delay of your analog filters, amplifier and speaker, and the
-real acoustic path. Those are inputs (--preset / --in-filter-ms / --out-filter-ms / --extra-ms);
-measure them with an oscilloscope or a loopback test.
+What `measure` does NOT know: the delay of your analog filters, DAC settling, amplifier and
+speaker, and the real acoustic path. Enter those with --preset / --in-filter-ms /
+--out-filter-ms / --dac-settle-us / --amp-us / --extra-ms (oscilloscope, datasheet).
 """
 import argparse
 import json
@@ -94,32 +102,55 @@ def open_serial(port, baud=115200, timeout=0.2):
 # ----------------------------------------------------------------------------
 # Commands
 # ----------------------------------------------------------------------------
-def filter_delays(args):
+def make_budget(args, isr_s=None, isr_status="supplied"):
+    """Build the budget from CLI args. Returns (budget, in_filter, out_filter, description)."""
+    in_f, out_f = tm.PRESETS[args.preset]
+    in_s = out_s = None
+    desc = f"preset {args.preset}"
     if args.in_filter_ms is not None or args.out_filter_ms is not None:
-        return (args.in_filter_ms or 0.0) * 1e-3, (args.out_filter_ms or 0.0) * 1e-3, "custom filter delays"
-    d_in, d_out, desc = tm.PRESETS[args.preset]
-    return d_in, d_out, f"preset {args.preset}: {desc}"
-
-
-def budget_from_args(args, isr_exec_s):
-    d_in, d_out, desc = filter_delays(args)
+        in_s = (args.in_filter_ms or 0.0) * 1e-3
+        out_s = (args.out_filter_ms or 0.0) * 1e-3
+        in_f = out_f = None
+        desc = "custom measured filter delays"
     b = tm.compute_budget(
         ref_to_spk_m=args.ref_spk_cm / 100.0, spk_to_err_m=args.spk_err_cm / 100.0,
         ref_to_err_m=None if args.ref_err_cm is None else args.ref_err_cm / 100.0,
-        in_filter_s=d_in, out_filter_s=d_out, fs_hz=args.fs,
-        isr_exec_s=isr_exec_s, extra_s=args.extra_ms * 1e-3)
-    return b, desc
+        in_filter=in_f, out_filter=out_f, in_filter_s=in_s, out_filter_s=out_s,
+        fs_hz=args.fs, isr_s=isr_s, isr_status=isr_status,
+        dac_settle_s=None if args.dac_settle_us is None else args.dac_settle_us * 1e-6,
+        amp_s=None if args.amp_us is None else args.amp_us * 1e-6,
+        wire_m=args.wire_m, extra_s=args.extra_ms * 1e-3, temp_c=args.temp_c)
+    return b, in_f, out_f, desc
+
+
+def exit_code(b, overran=False):
+    if overran or b["causal"] is False:
+        return 2
+    return 0 if b["causal"] else 3
+
+
+def print_filter_report(in_f, out_f, fs, band_max=300.0):
+    for label, flt in (("input", in_f), ("output", out_f)):
+        if flt is None:
+            continue
+        print(f"\n{label} filter: {flt.description}")
+        print(f"  DC group delay (upper bound over the band): {flt.dc_delay_s * 1e6:.3f} us")
+        for line in tm.anti_alias_report(flt, fs, band_max):
+            print(line)
 
 
 def cmd_budget(args):
-    b, desc = budget_from_args(args, args.isr_us * 1e-6)
+    isr_s = None if args.isr_us is None else args.isr_us * 1e-6
+    b, in_f, out_f, desc = make_budget(args, isr_s)
     if args.json:
-        print(json.dumps({k: v for k, v in b.items() if k != "items"} | {"items": dict(b["items"])}, indent=2))
+        out = dict(b)
+        out["terms"] = [{"name": n, "seconds": v, "status": st} for n, v, st in b["terms"]]
+        print(json.dumps(out, indent=2))
     else:
         print(f"filters: {desc}")
-        print(f"ISR execution: {args.isr_us:.1f} us ({'assumed - run `measure` for a real value' if args.isr_us == 0 else 'user supplied'})")
         print(tm.format_budget(b))
-    return 0 if b["causal"] else 2
+        print_filter_report(in_f, out_f, args.fs)
+    return exit_code(b)
 
 
 def pick_state(timings):
@@ -145,24 +176,21 @@ def cmd_measure(args, link=None):
     period = t.get("period_us", PERIOD_US_DEFAULT)
     exec_max, exec_avg = t["exec_us_max"], t["exec_us_avg"]
     print(f"\nISR timing, state {t['state']}, {int(t['n'])} samples")
-    print(f"  execution  avg {exec_avg:8.3f} us   worst {exec_max:8.3f} us   ({100 * exec_max / period:.1f}% of the {period:.0f} us period)")
-    ok = True
+    print(f"  execution  average {exec_avg:.3f} us   worst case {exec_max:.3f} us   (worst case = {100 * exec_max / period:.1f}% of the {period:.0f} us period)")
+    overran = t.get("overruns", 0) > 0
     if "interval_us_min" in t:
         jitter = max(t["interval_us_max"] - period, period - t["interval_us_min"])
-        print(f"  tick interval  min {t['interval_us_min']:8.3f}  max {t['interval_us_max']:8.3f} us   (jitter {jitter:.3f} us)")
-    if t.get("overruns", 0) > 0:
+        print(f"  tick interval  min {t['interval_us_min']:.3f} us  max {t['interval_us_max']:.3f} us   (largest deviation from {period:.0f} us: {jitter:.3f} us)")
+    if overran:
         print(f"  !! {int(t['overruns'])} ISR run(s) took longer than one sample period: samples are being lost")
-        ok = False
-    if exec_max > 0.5 * period:
-        print("  !! worst-case execution is over half the period; little room for anything else")
 
-    # The worst-case total step time is an upper bound for sample->DAC latency (the DAC is written
-    # before the weight update), so using it keeps the verdict on the safe side.
-    b, desc = budget_from_args(args, exec_max * 1e-6)
+    # exec_max covers the whole control step. The DAC is written before the weight update, so the
+    # true sample->DAC time is at most this: the figure is an upper bound on that delay.
+    b, in_f, out_f, desc = make_budget(args, exec_max * 1e-6, isr_status="measured, worst case")
     print(f"\nfilters: {desc}")
     print(tm.format_budget(b, "DELAY BUDGET with measured ISR time"))
-    print("\nnot measured here: analog filter, amplifier and woofer delay; the real acoustic path.")
-    return 0 if (ok and b["causal"]) else 2
+    print_filter_report(in_f, out_f, args.fs)
+    return exit_code(b, overran)
 
 
 def cmd_params(args, link=None):
@@ -210,7 +238,11 @@ def build_parser():
         p.add_argument("--preset", choices=sorted(tm.PRESETS), default="butterworth-1k")
         p.add_argument("--in-filter-ms", type=float, help="measured input filter delay (overrides preset)")
         p.add_argument("--out-filter-ms", type=float, help="measured output filter delay (overrides preset)")
-        p.add_argument("--extra-ms", type=float, default=0.0, help="any other measured delay (amp, DAC, ...)")
+        p.add_argument("--dac-settle-us", type=float, help="DAC output settling time (datasheet); unknown if omitted")
+        p.add_argument("--amp-us", type=float, help="power amplifier delay (scope); unknown if omitted")
+        p.add_argument("--wire-m", type=float, default=0.0, help="total signal wire length counted (default 0)")
+        p.add_argument("--extra-ms", type=float, default=0.0, help="any other delay you have measured")
+        p.add_argument("--temp-c", type=float, default=20.0, help="air temperature for the speed of sound")
         p.add_argument("--ref-spk-cm", type=float, default=35.0)
         p.add_argument("--spk-err-cm", type=float, default=25.0)
         p.add_argument("--ref-err-cm", type=float, help="direct ref->error distance if not collinear")
@@ -222,7 +254,7 @@ def build_parser():
 
     b = sub.add_parser("budget", help="offline delay budget")
     geometry(b)
-    b.add_argument("--isr-us", type=float, default=0.0, help="ISR execution time (default 0 = not yet measured)")
+    b.add_argument("--isr-us", type=float, default=None, help="ISR time (ADC+maths+SPI); unknown if omitted")
     b.add_argument("--json", action="store_true")
     b.set_defaults(fn=cmd_budget)
 

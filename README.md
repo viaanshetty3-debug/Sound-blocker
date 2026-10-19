@@ -14,17 +14,27 @@ An experimental hardware, firmware and Python simulation project for reducing lo
 
 | Model | Noise reduction | Why it differs |
 |---|---|---|
-| `simulate_window_anc.py` (toy) | −18.7 dB (synthetic rumble) | Ideal converters, **no analog filter delay**, hand-made acoustic paths |
-| `simulate_youtube_traffic.py` (toy) | −21.1 dB bass band; "−26.4 dB hybrid" | Same toy assumptions, plus a baffle that is just an **assumed** 0.14 gain |
-| `simulate_realistic_hil.py` (most detailed) | **≈ −7 to −9 dB** in 70–200 Hz, ≈ −6 dB full-band, at 2 m | 12-bit converters, analog-filter delay, 3D image-source room, non-linear woofer |
-| `mismatch_sweep.py` | Closed-form limits | Gain error, timing error and causality of an *ideal* controller |
+| `simulate_window_anc.py` (toy) | −18.7 dB (steady state, t = 6–10 s, synthetic rumble) | Ideal converters, **no analog filter delay**, hand-made acoustic paths |
+| `simulate_youtube_traffic.py` (toy) | −21.1 dB bass band (<320 Hz); −26.4 dB "hybrid" total | Same toy assumptions, plus a baffle that is just an **assumed** 0.14 gain |
+| `simulate_realistic_hil.py` (most detailed) | At the listener, 2 m: −9.2 dB in 70–200 Hz (baffle + ANC vs. bare window); ANC alone −7.8 dB in 70–220 Hz; −6.3 dB full-band | 12-bit converters, analog-filter delay, 3D image-source room, non-linear woofer |
+| `mismatch_sweep.py` | Exact formulas (below) | Gain error, timing error and delay budget of an *ideal* controller |
+
+The three simulator rows are the values the current code prints with its fixed random seeds. They describe the models, not a real window.
 
 Take-aways from `python3 simulator/mismatch_sweep.py`:
 
-* A 5 % gain error alone caps cancellation at −26 dB; 10 % caps it at −20 dB; 20 % at −14 dB.
-* At 300 Hz, 50 µs of timing error caps it at about −20 dB, and 250 µs at about −7 dB. Timing is the binding constraint.
-* **Delay decides a lot.** The acoustic head start is about 1.02 ms. The original RC-filter circuit plus the DAC hold adds about 1.45 ms, so the controller would have to predict the noise ~0.43 ms ahead (−5.7 dB for random 70–300 Hz noise with no prediction). Active 1 kHz Butterworth filters bring the total to about 0.58 ms, leaving ≈0.45 ms for ISR time, amplifier and speaker delay (calculated, not measured). `tools/timing_tool.py` redoes this with your measured numbers.
-* Cancellation is local: the quiet zone is roughly $\lambda/10$ across, i.e. centimetres at 300 Hz. The HIL model's 2 m result relies on the woofer sitting within ~12 cm of the air slot.
+* Gain error alone limits a tone's cancellation to 20·log10(error): a 5 % error gives −26.0 dB, 10 % gives −20.0 dB, 20 % gives −14.0 dB.
+* Timing error τ limits it to 20·log10(2·sin(π f τ)): at 300 Hz, 50 µs gives −20.5 dB and 250 µs gives −6.6 dB.
+* **Delay budget** (speed of sound 343.235 m/s at 20 °C, mic 35 cm from the speaker, head start H = 1019.7 µs). Only the terms that can be calculated are included; the ISR time, DAC settling and amplifier delay still need to be measured, and each can only add delay, so these are bounds:
+
+  | Filters (fs = 4 kHz unless stated) | Known delay | Margin | Break-even distance |
+  |---|---|---|---|
+  | `original-rc` (guide v1) | 1445.0 µs | ≤ −425.3 µs | ≥ 49.60 cm |
+  | `butterworth-1k` | 575.2 µs | ≤ +444.6 µs | ≥ 19.74 cm |
+  | `rc1-3k3-10n`, fs = 48 kHz | 76.4 µs | ≤ +943.3 µs | ≥ 2.62 cm |
+
+  For `original-rc` the controller must predict the noise **at least** 425.3 µs ahead. For flat-spectrum 70–300 Hz noise that is lateness alone leaves at best −5.73 dB (exact formula, no prediction; tonal content does better). The other two rows are undetermined until the missing terms are measured. `rc1-3k3-10n` attenuates 47.7 kHz, the frequency that aliases onto 300 Hz, by only 19.948 dB, and at 48 kHz a 128-tap filter spans 2.667 ms instead of 32 ms. `python3 tools/timing_tool.py budget` reproduces this table.
+* Cancellation is local. A common rule of thumb (not derived here) is that useful reduction extends over a region roughly one tenth of a wavelength across, which is 11.4 cm at 300 Hz (343.235 m/s). The HIL model places the woofer 12 cm from the air slot; that spacing is an assumption of the model, not a tested requirement.
 
 What is **not** claimed anywhere in this repo: zero-error cancellation, real-world validated performance, or a measured baffle insertion loss. (An earlier version claimed "0.0000000000 RMS / 100 % cancelled"; that check subtracted a signal from itself and was removed. `precision_phase_canceller.py` now reports the residual under stated gain/timing errors and labels the perfect-path value as zero by construction.)
 
@@ -80,4 +90,4 @@ python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
 
 ## Change log of this audit
 
-Replaced the circular "zero-error" check; fixed a one-sample secondary-path offset in the HIL calibration (S_hat NMSE −6.1 → −20.2 dB), the image-source coordinates, and a one-sample feedback-neutralisation misalignment in the firmware; corrected the guide's RC-filter maths (−3 dB at 181 Hz, not 482 Hz; ~1 ms delay); implemented the documented button; hardened the tablet server; made the tablet demo stop playing `x + (−x)`.
+Replaced the circular "zero-error" check; fixed a one-sample secondary-path offset in the HIL calibration (S_hat NMSE −6.1 → −20.2 dB), the image-source coordinates, and a one-sample feedback-neutralisation misalignment in the firmware; corrected the guide's RC-filter maths (the two-section filter's −3 dB point is 180.49 Hz, not 482 Hz, and its delay is 990 µs); implemented the documented button; hardened the tablet server; made the tablet demo stop playing `x + (−x)`.

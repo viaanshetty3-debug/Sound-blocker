@@ -162,6 +162,8 @@
 
   <script>
     const FS = 48000;
+    // Dry-air ideal-gas speed of sound at 22 C (same formula as the Python side); humidity ignored
+    const SPEED_OF_SOUND = Math.sqrt(1.4 * 8.314462618 * (22 + 273.15) / 0.0289647);
     const SCOPE_LEN = 400;
     let scopeIn = new Float32Array(SCOPE_LEN);
     let scopeOpp = new Float32Array(SCOPE_LEN);
@@ -281,7 +283,7 @@
         const input = e.inputBuffer.getChannelData(0);
         const output = e.outputBuffer.getChannelData(0);
         // Acoustic travel time to the speaker plane, plus the user-chosen timing error
-        const travelSamples = ((distCm / 100.0) / 344.632) * FS;
+        const travelSamples = ((distCm / 100.0) / SPEED_OF_SOUND) * FS;
         const exactDelaySamples = Math.round(travelSamples);
         const antiDelaySamples = Math.round(travelSamples + delayErrUs * 1e-6 * FS);
 

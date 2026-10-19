@@ -74,7 +74,12 @@ def main():
     sig = 20 * np.log10(np.sqrt(np.mean((tone - 0.95 * fft_delay(tone, 100e-6)) ** 2)) / np.sqrt(np.mean(tone ** 2)))
     ana = tone_residual_db(100.0, 0.95, 100e-6)
     assert abs(sig - ana) < 0.05, (sig, ana)
-    print(f" [check] closed form vs simulated tone: {ana:.2f} dB vs {sig:.2f} dB  OK\n")
+    print(f" [check] closed form vs simulated tone: {ana:.2f} dB vs {sig:.2f} dB  OK")
+    xb = bandlimited_noise(70.0, 300.0)
+    sim_b = broadband_residual_db(xb, 1.0, 250e-6)
+    ana_b = tm.band_residual_db(70.0, 300.0, 250e-6)
+    assert abs(sim_b - ana_b) < 0.3, (sim_b, ana_b)
+    print(f" [check] flat 70-300 Hz noise, 250 us late: exact formula {ana_b:.2f} dB, simulated noise {sim_b:.2f} dB (random noise: small scatter)\n")
 
     print(" Part 1 - single tone, residual in dB (more negative = better)")
     delays_us = [0, 10, 50, 100, 250, 500]
@@ -95,18 +100,20 @@ def main():
     print("   phase within ~6 deg at the highest frequency (300 Hz: ~55 us!).")
 
     print("\n Part 3 - delay budget of the documented geometry (35 cm ref->speaker, 25 cm speaker->error)")
-    print(" (same model as tools/timing_tool.py; ISR time is not included until you measure it)")
+    print(" (same model as tools/timing_tool.py; terms that need a measurement are shown as NOT SUPPLIED)")
     for name in ("original-rc", "butterworth-1k"):
-        d_in, d_out, desc = tm.PRESETS[name]
-        bud = tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)
+        in_f, out_f = tm.PRESETS[name]
+        bud = tm.compute_budget(in_filter=in_f, out_filter=out_f)
         print()
-        print(tm.format_budget(bud, f"{name}: {desc}"))
-    d_in, d_out, _ = tm.PRESETS["original-rc"]
-    short = -tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)["margin_s"]
-    res = broadband_residual_db(x, 1.0, short)
-    print("\n   A negative margin is a SOFT limit: the controller must predict the noise ahead.")
-    print(f"   With no prediction at all, a {short * 1e6:.0f} us shortfall leaves {res:.1f} dB for 70-300 Hz noise (Part 2 method).")
-    print("   Tonal engine harmonics are predictable and do better; random tyre noise does not.")
+        print(tm.format_budget(bud, f"preset {name}"))
+    in_f, out_f = tm.PRESETS["original-rc"]
+    bud = tm.compute_budget(in_filter=in_f, out_filter=out_f)
+    short = -bud["margin_upper_bound_s"]
+    best = tm.band_residual_db(70.0, 300.0, short)
+    print("\n   A shortfall is a SOFT limit: the controller must predict the noise ahead.")
+    print(f"   For noise with a flat spectrum over 70-300 Hz, a pure lateness of {short * 1e6:.1f} us (the minimum for the")
+    print(f"   original circuit; unmeasured terms only add to it) leaves at best {best:.2f} dB (exact formula, no prediction).")
+    print("   Tonal engine harmonics are predictable and can do better; random tyre noise cannot.")
     print("=" * 74)
 
 

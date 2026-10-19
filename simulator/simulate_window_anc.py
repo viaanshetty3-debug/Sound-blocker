@@ -15,9 +15,11 @@ simulator/mismatch_sweep.py and simulate_realistic_hil.py, which gives about -7 
 Use this file to study the FxLMS algorithm, not to predict window performance.
 
 Physical Geometry Modeled:
-- Outdoor Reference Mic -> Speaker ( Window Plane ): 35 cm (~1.02 ms)
-- Speaker ( Window Plane ) -> Indoor Error Mic     : 25 cm (~0.73 ms)
-- Total Primary Path (Ref Mic -> Error Mic)        : 60 cm (~1.75 ms)
+- Outdoor Reference Mic -> Speaker ( Window Plane ): 35 cm (1.020 ms at 343 m/s)
+- Speaker ( Window Plane ) -> Indoor Error Mic     : 25 cm (0.729 ms)
+- Total Primary Path (Ref Mic -> Error Mic)        : 60 cm (1.749 ms)
+  The simulation rounds these delays to whole samples at 4 kHz (7, 3 and 4 samples =
+  1.75, 0.75 and 1.00 ms), so its timing is slightly off the physical values.
 - Sealed 5.25" Woofer + Amplifier Phase Response   : Modeled in S(z)
 - Cardioid Mic Acoustic Feedback (Speaker -> Ref)  : Modeled in F(z)
 

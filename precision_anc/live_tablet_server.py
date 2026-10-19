@@ -78,7 +78,7 @@ class PrecisionANCHandler(SimpleHTTPRequestHandler):
                 return
 
             # Return a 512-sample slice after warmup for live oscilloscope verification
-            warmup = min(len(inc_wave) - 512, max(64, int((dist_cm / 100.0 / 344.63) * fs) + 40))
+            warmup = min(len(inc_wave) - 512, max(64, int((dist_cm / 100.0 / budget["speed_of_sound_m_s"]) * fs) + 40))
             warmup = max(0, warmup)
             resp_data = {
                 "details": details,

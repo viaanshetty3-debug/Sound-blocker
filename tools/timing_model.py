@@ -1,109 +1,242 @@
 """
-Delay / causality model for the open-window feed-forward ANC system.
+Delay budget for the open-window feed-forward ANC system, with strict bookkeeping.
 
-One place for the arithmetic, shared by tools/timing_tool.py and simulator/mismatch_sweep.py.
+Rule of this module: every term is one of
+  calculated  - derived from a formula below with stated inputs,
+  measured    - supplied from a measurement (e.g. the firmware's ISR timer),
+  supplied    - typed in by the user (datasheet value, scope reading, ...),
+  NOT SUPPLIED- unknown. It is never replaced by a guess. While anything is NOT SUPPLIED the
+                result is a BOUND (margin <= x, break-even distance >= y), not a single number.
 
-The question it answers: how much time is there between "the reference mic hears the noise"
-and "the anti-noise must already be at the error mic", and how much of it do the electronics use?
+Definitions
+-----------
+    head start  H = (ref->error path - speaker->error path) / c
+                  = d / c      when mic, speaker and error mic are collinear with the noise's
+                               direction of travel (d = ref mic to speaker distance)
+    delay       T = sum of the terms below
+    margin      M = H - T       (M >= 0: the controller can react in time;
+                                 M < 0: it must predict the noise |M| ahead)
+    break-even  d_min = c * T   (the mic-to-speaker distance at which M = 0)
 
-    head_start = (ref->error acoustic path) - (speaker->error acoustic path)
-    margin     = head_start - (sum of electronics / filter delays)
+Terms and where they come from
+------------------------------
+  input / output filter : low-frequency (DC) group delay of the filter. For the low-pass filters
+                          used here the group delay is largest at DC, so this is an upper bound
+                          over the band. Unloaded filter formulas (no source/load impedance).
+        1-pole RC               RC
+        n-section RC ladder     RC * n(n+1)/2          (first moment of the impulse response)
+        2nd-order Butterworth   sqrt(2) / (2*pi*fc)
+  zero-order hold       : 1 / (2*fs). The ZOH has exactly linear phase, so T/2 holds at every
+                          frequency below fs (assumes the DAC is written once per tick).
+  ISR                   : time from the start of the sample tick to the end of the control step.
+                          It already contains the ADC conversions, the filter maths and the SPI
+                          write. Using the end of the step is an upper bound on sample->DAC time
+                          because the DAC is written before the weight update.
+  DAC settling          : DAC output settling after the SPI write (datasheet value).
+  amplifier             : power-amp group delay (scope measurement).
+  wiring                : length / v_cable. v_cable is an ASSUMPTION (about 2e8 m/s for ordinary
+                          cable; slower in some cable, faster in none).
 
-margin >= 0: the controller can react in time. margin < 0: it must PREDICT the noise
-|margin| seconds ahead. Prediction works for tonal / periodic content and degrades quickly for
-broadband random noise, so a negative margin limits broadband reduction badly (it is a soft limit,
-not a switch from "works" to "does nothing"; see simulator/mismatch_sweep.py for numbers).
+Speed of sound: c = sqrt(gamma * R * T / M) for dry air as an ideal gas (gamma 1.4,
+M 0.0289647 kg/mol). Humidity is ignored. 20 C gives 343.23 m/s.
 
-Assumptions (state them when quoting a result):
-  * Reference mic, speaker and error mic lie on a line along the arrival direction of the noise
-    (best case; any other arrival angle shortens the head start). Pass ref_to_err_m to override.
-  * Filter delays are the low-frequency group-delay limits (close to the in-band value for the
-    70-300 Hz band of interest).
-  * Output zero-order hold costs half a sample period on average.
-  * The sealed woofer's low-frequency roll-off is NOT counted as delay: it is minimum phase, so
-    it limits the gain you can get below the woofer corner (excursion), not causality.
+Not modelled (and why that matters)
+-----------------------------------
+  * Arrival direction: for a plane wave arriving at angle theta to the mic-speaker line,
+    H = d*cos(theta)/c is shorter. Collinear is the best case.
+  * Mic and speaker are treated as points. Use the acoustic centres.
+  * The sealed woofer's low-frequency roll-off is minimum phase: it limits the gain available
+    below its corner (cone excursion), not causality, so it is not a delay term here.
 """
 import math
 
-C_SOUND = 343.0   # m/s at about 20 C
+GAMMA_AIR = 1.4
+R_GAS = 8.314462618        # J/(mol K)
+M_AIR = 0.0289647          # kg/mol, dry air
+V_CABLE_ASSUMED = 2.0e8    # m/s, ASSUMED signal speed in cable
 
 
-def ladder_rc_delay_s(n_sections, r_ohm, c_farad):
-    """Elmore delay of n identical, unloaded RC sections in a ladder: RC * n(n+1)/2."""
-    return r_ohm * c_farad * n_sections * (n_sections + 1) / 2.0
+def speed_of_sound(temp_c=20.0):
+    """Speed of sound in dry air, ideal gas, m/s."""
+    return math.sqrt(GAMMA_AIR * R_GAS * (temp_c + 273.15) / M_AIR)
 
 
-def butterworth2_delay_s(fc_hz):
-    """Low-frequency group delay of a 2nd-order Butterworth low-pass: sqrt(2) / (2*pi*fc)."""
-    return math.sqrt(2.0) / (2.0 * math.pi * fc_hz)
+# ----------------------------------------------------------------------------
+# Filters
+# ----------------------------------------------------------------------------
+class Filter:
+    """Low-pass filter: DC group delay, magnitude response and a human-readable description."""
+
+    def __init__(self, description, dc_delay_s, gain_fn, fc_hz=None):
+        self.description = description
+        self.dc_delay_s = dc_delay_s
+        self._gain = gain_fn
+        self.fc_hz = fc_hz            # -3 dB frequency, if known in closed form
+
+    def gain_db(self, f_hz):
+        return 20.0 * math.log10(self._gain(f_hz))
 
 
-def zoh_delay_s(fs_hz):
-    """Average delay of a zero-order-hold DAC output: half a sample period."""
-    return 0.5 / fs_hz
+def rc1(r_ohm, c_farad):
+    tau = r_ohm * c_farad
+    return Filter(f"1-pole RC, R={r_ohm:g} ohm, C={c_farad * 1e9:g} nF (unloaded)", tau,
+                  lambda f: 1.0 / math.sqrt(1.0 + (2 * math.pi * f * tau) ** 2),
+                  fc_hz=1.0 / (2 * math.pi * tau))
 
 
+def rc_ladder2(r_ohm, c_farad):
+    tau = r_ohm * c_farad
+
+    def gain(f):
+        x = 2 * math.pi * f * tau
+        return 1.0 / math.hypot(1.0 - x * x, 3.0 * x)
+
+    # -3 dB point of 1/(1 - x^2 + j3x): |H|^2 = 1/((1-x^2)^2 + 9x^2) = 1/2  ->  x^4 + 7x^2 - 1 = 0
+    x3 = math.sqrt((-7.0 + math.sqrt(49.0 + 4.0)) / 2.0)
+    return Filter(f"2-section RC ladder, R={r_ohm:g} ohm, C={c_farad * 1e9:g} nF each (unloaded)",
+                  3.0 * tau, gain, fc_hz=x3 / (2 * math.pi * tau))
+
+
+def butterworth2(fc_hz):
+    return Filter(f"2nd-order Butterworth, fc={fc_hz:g} Hz",
+                  math.sqrt(2.0) / (2 * math.pi * fc_hz),
+                  lambda f: 1.0 / math.sqrt(1.0 + (f / fc_hz) ** 4), fc_hz=fc_hz)
+
+
+# preset name -> (input filter, output filter)
 PRESETS = {
-    # name: (input filter delay s, output filter delay s, description)
-    "original-rc": (
-        ladder_rc_delay_s(2, 1500.0, 220e-9),
-        ladder_rc_delay_s(1, 1500.0, 220e-9),
-        "original guide: 2-section passive RC in (1.5k/220nF), 1-section RC out",
-    ),
-    "butterworth-1k": (
-        butterworth2_delay_s(1000.0),
-        butterworth2_delay_s(1000.0),
-        "Sallen-Key 2nd-order Butterworth, fc = 1 kHz, in and out",
-    ),
-    "none": (0.0, 0.0, "no analog filter delay (what the toy simulators assume)"),
+    "original-rc": (rc_ladder2(1500.0, 220e-9), rc1(1500.0, 220e-9)),
+    "butterworth-1k": (butterworth2(1000.0), butterworth2(1000.0)),
+    "rc1-3k3-10n": (rc1(3300.0, 10e-9), rc1(3300.0, 10e-9)),
+    "none": (None, None),
 }
 
 
-def head_start_s(ref_to_spk_m, spk_to_err_m, ref_to_err_m=None):
-    """Acoustic head start in seconds."""
+def zoh_delay_s(fs_hz):
+    return 0.5 / fs_hz
+
+
+# ----------------------------------------------------------------------------
+# Budget
+# ----------------------------------------------------------------------------
+def head_start_s(ref_to_spk_m, spk_to_err_m, ref_to_err_m=None, temp_c=20.0):
     if ref_to_err_m is None:
-        ref_to_err_m = ref_to_spk_m + spk_to_err_m      # collinear best case
-    return (ref_to_err_m - spk_to_err_m) / C_SOUND
+        ref_to_err_m = ref_to_spk_m + spk_to_err_m       # collinear
+    return (ref_to_err_m - spk_to_err_m) / speed_of_sound(temp_c)
 
 
 def compute_budget(ref_to_spk_m=0.35, spk_to_err_m=0.25, ref_to_err_m=None,
-                   in_filter_s=0.0, out_filter_s=0.0, fs_hz=4000.0,
-                   isr_exec_s=0.0, extra_s=0.0):
-    """Return a dict describing the delay budget. All times in seconds."""
-    head = head_start_s(ref_to_spk_m, spk_to_err_m, ref_to_err_m)
-    items = [
-        ("input filter", in_filter_s),
-        ("output filter", out_filter_s),
-        ("zero-order hold (T/2)", zoh_delay_s(fs_hz)),
-        ("ISR execution", isr_exec_s),
-        ("other / extra", extra_s),
+                   in_filter=None, out_filter=None,
+                   in_filter_s=None, out_filter_s=None,
+                   fs_hz=4000.0, isr_s=None, isr_status="supplied",
+                   dac_settle_s=None, amp_s=None, wire_m=0.0, extra_s=0.0, temp_c=20.0):
+    """
+    Return a dict. None for isr_s / dac_settle_s / amp_s means NOT SUPPLIED (unknown).
+    Filter delays come from `in_filter`/`out_filter` objects, or from explicit
+    `in_filter_s`/`out_filter_s` (seconds) when you measured them.
+    """
+    c = speed_of_sound(temp_c)
+    head = head_start_s(ref_to_spk_m, spk_to_err_m, ref_to_err_m, temp_c)
+
+    def filt_term(name, flt, explicit):
+        if explicit is not None:
+            return (name, explicit, "supplied")
+        if flt is not None:
+            return (name, flt.dc_delay_s, "calculated")
+        return (name, 0.0, "supplied")       # 'none' preset: the user states there is no filter
+
+    terms = [
+        filt_term("input filter", in_filter, in_filter_s),
+        filt_term("output filter", out_filter, out_filter_s),
+        ("zero-order hold (1/(2 fs))", zoh_delay_s(fs_hz), "calculated"),
+        ("ISR (ADC + maths + SPI write)", isr_s, isr_status if isr_s is not None else "NOT SUPPLIED"),
+        ("DAC output settling", dac_settle_s, "supplied" if dac_settle_s is not None else "NOT SUPPLIED"),
+        ("power amplifier", amp_s, "supplied" if amp_s is not None else "NOT SUPPLIED"),
+        (f"wiring ({wire_m:g} m at an assumed {V_CABLE_ASSUMED:.1e} m/s)", wire_m / V_CABLE_ASSUMED, "calculated"),
     ]
-    total = sum(v for _, v in items)
-    margin = head - total
-    return {
-        "head_start_s": head,
-        "items": items,
-        "total_s": total,
-        "margin_s": margin,
-        "causal": margin >= 0.0,
-        "fs_hz": fs_hz,
+    if extra_s:
+        terms.append(("other delay", extra_s, "supplied"))
+
+    known = sum(v for _, v, _ in terms if v is not None)
+    missing = [n for n, v, _ in terms if v is None]
+    complete = not missing
+    upper_margin = head - known
+    out = {
+        "c_m_s": c, "temp_c": temp_c, "fs_hz": fs_hz,
+        "head_start_s": head, "terms": terms,
+        "known_total_s": known, "missing": missing, "complete": complete,
+        "margin_s": upper_margin if complete else None,
+        "margin_upper_bound_s": upper_margin,
+        "d_min_m": c * known if complete else None,
+        "d_min_lower_bound_m": c * known,
     }
+    if upper_margin < 0:
+        out["causal"] = False            # unknown terms can only add delay, so this is definite
+    elif complete:
+        out["causal"] = True
+    else:
+        out["causal"] = None             # undetermined until the missing terms are supplied
+    return out
 
 
-def prediction_phase_deg(margin_s, freq_hz):
-    """Phase (degrees) the controller would have to predict ahead at freq_hz when margin < 0."""
-    return 360.0 * freq_hz * max(0.0, -margin_s)
+def anti_alias_report(flt, fs_hz, band_max_hz=300.0):
+    """Exact magnitude numbers for judging aliasing; no verdict is made here."""
+    lines = []
+    if flt is None:
+        return lines
+    nyq = fs_hz / 2.0
+    if flt.fc_hz is not None and flt.fc_hz >= nyq:
+        lines.append(f"  WARNING: -3 dB frequency {flt.fc_hz:.0f} Hz is at or above the Nyquist frequency "
+                     f"{nyq:.0f} Hz: this filter does not protect against aliasing at fs = {fs_hz:.0f} Hz")
+    rows = [
+        (f"gain at {band_max_hz:.0f} Hz (in-band droop)", band_max_hz),
+        (f"gain at Nyquist {nyq:.0f} Hz", nyq),
+        (f"gain at fs - {band_max_hz:.0f} Hz = {fs_hz - band_max_hz:.0f} Hz (aliases onto {band_max_hz:.0f} Hz)", fs_hz - band_max_hz),
+    ]
+    for label, f in rows:
+        lines.append(f"  {label:<62}{flt.gain_db(f):9.3f} dB")
+    return lines
+
+
+def prediction_phase_deg(shortfall_s, freq_hz):
+    return 360.0 * freq_hz * max(0.0, shortfall_s)
+
+
+def band_residual_db(f_lo_hz, f_hi_hz, delay_err_s, gain=1.0):
+    """
+    Exact residual (dB re uncancelled) for noise with a flat spectrum over [f_lo, f_hi] when the
+    anti-noise has `gain` and is late by `delay_err_s`: 10*log10( 1 + g^2 - 2 g * mean(cos(w tau)) ).
+    """
+    if delay_err_s == 0.0:
+        mean_cos = 1.0
+    else:
+        w1, w2 = 2 * math.pi * f_lo_hz, 2 * math.pi * f_hi_hz
+        mean_cos = (math.sin(w2 * delay_err_s) - math.sin(w1 * delay_err_s)) / (delay_err_s * (w2 - w1))
+    power = 1.0 + gain * gain - 2.0 * gain * mean_cos
+    return 10.0 * math.log10(max(power, 1e-30))
 
 
 def format_budget(b, title="DELAY BUDGET"):
     lines = [title, "-" * len(title)]
-    lines.append(f"  acoustic head start (ref mic -> speaker plane) : {b['head_start_s'] * 1e3:8.3f} ms")
-    for name, v in b["items"]:
-        lines.append(f"  - {name:<28}                  : {v * 1e3:8.3f} ms")
-    lines.append(f"  total electronics / filter delay               : {b['total_s'] * 1e3:8.3f} ms")
-    verdict = "reacts in time" if b["causal"] else "must PREDICT the noise ahead"
-    lines.append(f"  margin                                         : {b['margin_s'] * 1e3:+8.3f} ms  ({verdict})")
-    if not b["causal"]:
-        for f in (100, 200, 300):
-            lines.append(f"    prediction needed at {f:3d} Hz: {prediction_phase_deg(b['margin_s'], f):5.0f} deg ahead")
+    lines.append(f"  speed of sound at {b['temp_c']:g} C (dry air)      : {b['c_m_s']:10.3f} m/s")
+    lines.append(f"  acoustic head start H                 : {b['head_start_s'] * 1e6:10.1f} us")
+    lines.append("  delay terms:")
+    for name, v, status in b["terms"]:
+        val = "      --      " if v is None else f"{v * 1e6:10.1f} us"
+        lines.append(f"    {name:<46} {val}   [{status}]")
+    lines.append(f"  total of the terms that are known     : {b['known_total_s'] * 1e6:10.1f} us")
+    if b["complete"]:
+        lines.append(f"  margin M = H - T                      : {b['margin_s'] * 1e6:+10.1f} us")
+        lines.append(f"  break-even distance d_min = c T       : {b['d_min_m'] * 100:10.2f} cm")
+    else:
+        lines.append(f"  NOT SUPPLIED: {', '.join(b['missing'])}")
+        lines.append(f"  margin M                              <= {b['margin_upper_bound_s'] * 1e6:+9.1f} us  (upper bound)")
+        lines.append(f"  break-even distance d_min             >= {b['d_min_lower_bound_m'] * 100:9.2f} cm  (lower bound)")
+    if b["causal"] is True:
+        lines.append("  verdict: the controller can react in time (all terms supplied)")
+    elif b["causal"] is False:
+        short = -b["margin_upper_bound_s"]
+        lines.append(f"  verdict: the controller must predict the noise at least {short * 1e6:.1f} us ahead")
+    else:
+        lines.append("  verdict: undetermined until the missing terms are supplied")
     return "\n".join(lines)

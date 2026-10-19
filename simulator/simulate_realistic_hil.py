@@ -10,7 +10,7 @@ numbers as "what this model predicts", not as measured performance.
 
 Contents:
 
-1. 3D Bedroom Image-Source Acoustics (4.2m x 3.6m x 2.7m, RT60 ~ 0.36s):
+1. 3D Bedroom Image-Source Acoustics (4.2m x 3.6m x 2.7m, RT60 = 0.35 s, Sabine average):
    - Separate 3D paths from Window Air-Exit Slot and 5.25" Woofer (12 cm apart)
      to the Indoor Error Mic (0.25m) AND a Stereo Human Listener (2.0m inside room).
    - Structural flanking transmission through the closed 4mm glass window pane.
@@ -19,11 +19,12 @@ Contents:
      phase rotation, voice-coil inductance, and 2.5% non-linear cone THD.
    - Cardioid Outdoor Reference Mic with frequency-dependent rear rejection,
      -62 dBFS thermal self-noise, and uncorrelated outdoor wind buffeting (15-50 Hz).
-   - Realistic S-Curve Melamine Foam Baffle insertion loss curve (1 dB @ 60 Hz,
-     6 dB @ 250 Hz, 13 dB @ 600 Hz, 19 dB @ 2 kHz).
+   - Baffle: two first-order low-pass filters (260 Hz, 900 Hz) plus a 38 cm delay. This is an
+     ILLUSTRATIVE filter, not measured foam data. The duct path it produces (without glass):
+     0.5 dB @ 60 Hz, 3.4 dB @ 250 Hz, 10.1 dB @ 600 Hz, 27.6 dB @ 2 kHz.
 3. Real Mixed-Signal Electronics (12:1 Multi-Rate 48 kHz <-> 4 kHz):
    - Minimum-phase 2-pole analog RC anti-aliasing & reconstruction filters
-     (fc = 480 Hz) introducing ~0.48 ms of real analog group delay each way.
+     (fc = 480 Hz) introducing 0.469 ms of low-frequency group delay each way (sqrt(2)/(2*pi*fc)).
    - 12-bit SAR ADC quantization (4,096 levels + 1.2 LSB thermal jitter).
    - 12-bit MCP4921 SPI DAC quantization + Zero-Order Hold (ZOH) staircase.
 """
@@ -147,11 +148,11 @@ def build_baffle_and_flanking_filters():
     """
     1. Foam-Lined S-Curve Baffle Transmission:
        - Adds 38 cm effective internal acoustic path length (~1.11 ms delay)
-       - Progressive acoustic foam absorption: ~1 dB at 60 Hz, ~5.5 dB at 250 Hz,
-         ~12 dB at 600 Hz, ~19 dB above 1.5 kHz.
-    2. Closed Window Glass Pane Flanking Path:
-       - Sound transmitted directly through the closed 4mm glass pane (-24 dB mass law
-         with a coincidence dip around 2.5 kHz) bypassing the ANC baffle.
+       - Illustrative loss of this filter (not measured foam): 0.5 dB at 60 Hz, 3.4 dB at 250 Hz,
+         10.1 dB at 600 Hz, 27.6 dB at 2 kHz (computed from the filter, see the combined
+         baffle + glass figures in the printed report).
+    2. Glass pane flanking path (gain 0.045 = -26.9 dB above the 180 Hz high-pass corner):
+       - A flat, assumed transmission. No mass-law slope and no coincidence dip is modelled.
     """
     # Baffle filter: cascade of shelf/lowpass filters matching melamine foam duct data
     b1, a1 = signal.butter(1, 260.0 / (FS_PHYS / 2.0), btype="low")

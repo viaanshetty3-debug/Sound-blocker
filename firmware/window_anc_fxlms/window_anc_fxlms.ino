@@ -12,10 +12,11 @@
  *   send "?timing" over serial, or run `python3 tools/timing_tool.py measure --port <port>`.
  *   The worst case must stay well under 250 us.
  * - The dominant delay is the ANALOG anti-alias / reconstruction filters, not the code.
- *   See HARDWARE_AND_BAFFLE_GUIDE.md: the original passive RC filters total about 1.45 ms
- *   with the hold, against about 1.0 ms of acoustic head start, so the controller would have
- *   to predict the noise ~0.4 ms ahead, which limits broadband reduction badly. The active
- *   Butterworth filters in the guide total about 0.58 ms.
+ *   See HARDWARE_AND_BAFFLE_GUIDE.md: the original passive RC filters plus the hold total
+ *   1445.0 us (excluding ISR, DAC settling and amplifier), against a head start of 1019.7 us
+ *   (35 cm, 20 C), so the controller must predict the noise at least 425.3 us ahead, which
+ *   limits broadband reduction badly. The active Butterworth filters in the guide total
+ *   575.2 us known.
  * - `python3 tools/timing_tool.py budget` prints the full delay budget.
  *
  * PINOUT (Teensy 4.0):
