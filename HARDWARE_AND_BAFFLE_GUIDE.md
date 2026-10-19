@@ -31,20 +31,36 @@ That is a soft limit, not a switch: tonal engine harmonics can be predicted, but
 1. MICROPHONE INPUT STAGE (Build 2 Identical Channels: Outdoor Ref & Indoor Error)
 ====================================================================================
 
- [Electret Mic] ---> [Fixed-gain preamp] ---> [Sallen-Key 2nd-order Butterworth, fc = 1 kHz] ---> Teensy ADC
-  (e.g. Primo                                   unity-gain, rail-to-rail op-amp on 3.3 V         - Outdoor Ref -> A0 (14)
-   EM258 or                                                                                      - Indoor Err  -> A1 (15)
-   Cardioid          in --[R1 = 11k]--+--[R2 = 11k]--+--(+) op-amp (output = (-) input)---> out
-   Capsule)                           |              |
-                                  [C1 = 20 nF]   [C2 = 10 nF]
-                                  (to op-amp     (to bias/GND)
-                                   output)
-  * fc = 1 / (2*pi*R*sqrt(C1*C2)) = 1 / (2*pi*11k*14.1nF) ~= 1.02 kHz;  Q = 0.5*sqrt(C1/C2) = 0.707
-  * Group delay at low frequency ~= sqrt(2)/(2*pi*fc) ~= 0.22 ms (calculated, not measured).
-  * At Fs = 4 kHz a 2nd-order filter at 1 kHz only attenuates ~12 dB at the 2 kHz Nyquist
-    frequency, so some aliasing of horns/hiss remains. That is a trade-off against delay.
-  * Bias Voltage: the signal must sit at 1.65 V. Bias the filter's non-inverting node with two
-    10k resistors between 3.3 V and GND after a 4.7 uF AC-coupling capacitor.
+ [Electret mic board] ---> [Sallen-Key 2nd-order Butterworth, fc = 1 kHz] ---> Teensy ADC
+  (e.g. Adafruit 1063,         unity gain, referenced to AGND = 1.65 V         - Outdoor Ref -> A0 (14)
+   MAX4466 board: fixed        (rail-to-rail op-amp, e.g. MCP6022, 3.3 V)       - Indoor Err  -> A1 (15)
+   gain set by its trimmer,
+   output rests at VCC/2,    in --[R1 = 11k]--A--[R2 = 11k]--B--(+) op-amp
+   DC-coupled)                                |                |   (-) tied to output ---> out
+                                          [C1 = 20 nF]     [C2 = 10 nF]
+                                          A to op-amp      B to AGND
+                                          output
+  * C1 = two 10 nF capacitors in parallel; C2 = one 10 nF. Use film or C0G capacitors.
+  * fc = 1 / (2*pi*R*sqrt(C1*C2)) = 1 / (2*pi*11k*14.14 nF) = 1.023 kHz;  Q = 0.5*sqrt(C1/C2) = 0.7071
+  * With these exact values the cutoff is 1023.1 Hz (not exactly 1 kHz) and the DC group delay is
+    C2*(R1+R2) = 10 nF * 22 kohm = 220.0 us (calculated, ideal op-amp, not measured).
+  * At Fs = 4 kHz the filter attenuates the 2 kHz Nyquist frequency by only 11.93 dB, so some
+    aliasing of horns/hiss remains. That is a trade-off against delay.
+
+  ANALOG GROUND (AGND = 1.65 V). On a single 3.3 V supply the filter capacitors must return to a
+  stable 1.65 V, not to 0 V, and the signal rests at 1.65 V:
+
+    3.3 V --[10k]--+--[10k]-- GND          (two 10k resistors, 1.65 V)
+                   |
+                   +--[100 nF to GND]--(+) spare op-amp section, (-) tied to its output = AGND
+                                        and a 10 uF capacitor from AGND to GND
+
+  Four op-amp sections are needed in total: three filters (reference mic, error mic, output)
+  plus this AGND buffer, so two dual op-amp chips. Do NOT bias a filter by hanging a divider on
+  its (+) input: that resistance sits in parallel with C2 and changes the filter.
+
+  The MAX4466 board's output is already biased at VCC/2 (Adafruit's product page), so connect it
+  directly (no coupling capacitor). Power the board from the Teensy's 3.3 V so that bias is 1.65 V.
 
 ====================================================================================
 2. TEENSY 4.0 TO MCP4921 (12-BIT SPI DAC) & AMPLIFIER OUTPUT STAGE
@@ -59,10 +75,12 @@ That is a soft limit, not a switch: tonal engine harmonics can be predicted, but
   GND       ---------------------> Pin 5 (/LDAC - tie directly to GND) & Pin 7 (VSS)
                                    Pin 8 (VOUT)
                                         |
-                                   [C_dc = 10 uF Film/Electrolytic Cap] (Blocks 1.65V DC)
+                                   [same Sallen-Key Butterworth, fc = 1 kHz, referenced to AGND]
+                                        |  (the DAC output rests at 1.65 V at mid-code, so it is
+                                        |   DC-coupled into the filter)
+                                        |  (reconstruction filter, 220.0 us)
+                                   [C_dc = 10 uF Film/Electrolytic Cap] (blocks the 1.65 V DC, after the filter)
                                         |
-                                   [same Sallen-Key Butterworth, fc = 1 kHz, as the input stage]
-                                        |  (reconstruction filter, ~0.22 ms)
                                         +---> To Power Amp Analog IN
 
 ====================================================================================

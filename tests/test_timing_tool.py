@@ -85,6 +85,16 @@ class ModelTests(unittest.TestCase):
         b = tm.PRESETS["butterworth-1k"][0]
         self.assertAlmostEqual(b.dc_delay_s * 1e6, 225.079, places=2)      # sqrt(2)/(2 pi 1000)
 
+    def test_sallen_key_with_purchased_parts(self):
+        sk = tm.PRESETS["sk-11k-20n-10n"][0]
+        self.assertAlmostEqual(sk.dc_delay_s * 1e6, 220.0, places=6)         # C2 (R1 + R2) = 10 nF x 22 k
+        self.assertAlmostEqual(sk.fc_hz, 1023.09, places=2)                  # Q = 1/sqrt(2): same as Butterworth
+        self.assertAlmostEqual(sk.gain_db(sk.fc_hz), -3.0103, places=3)
+        self.assertAlmostEqual(sk.gain_db(2000.0), -11.932, places=3)        # at the 2 kHz Nyquist frequency (fs = 4 kHz)
+        bw = tm.butterworth2(1023.0867229)
+        for f in (100.0, 500.0, 1500.0, 3000.0):
+            self.assertAlmostEqual(sk.gain_db(f), bw.gain_db(f), places=3)
+
     def test_ladder_minus_3db_frequency(self):
         lad = tm.PRESETS["original-rc"][0]
         self.assertAlmostEqual(lad.fc_hz, 180.49, places=2)

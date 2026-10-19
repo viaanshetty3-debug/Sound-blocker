@@ -31,6 +31,7 @@ Take-aways from `python3 simulator/mismatch_sweep.py`:
   |---|---|---|---|
   | `original-rc` (guide v1) | 1445.0 µs | ≤ −425.3 µs | ≥ 49.60 cm |
   | `butterworth-1k` | 575.2 µs | ≤ +444.6 µs | ≥ 19.74 cm |
+  | `sk-11k-20n-10n` (the parts in the guide: 11 kΩ, 20 nF, 10 nF; fc = 1023.1 Hz) | 565.0 µs | ≤ +454.7 µs | ≥ 19.39 cm |
   | `rc1-3k3-10n`, fs = 48 kHz | 76.4 µs | ≤ +943.3 µs | ≥ 2.62 cm |
 
   For `original-rc` the controller must predict the noise **at least** 425.3 µs ahead. For flat-spectrum 70–300 Hz noise that is lateness alone leaves at best −5.73 dB (exact formula, no prediction; tonal content does better). The other two rows are undetermined until the missing terms are measured. `rc1-3k3-10n` attenuates 47.7 kHz, the frequency that aliases onto 300 Hz, by only 19.948 dB, and at 48 kHz a 128-tap filter spans 2.667 ms instead of 32 ms. `python3 tools/timing_tool.py budget` reproduces this table.

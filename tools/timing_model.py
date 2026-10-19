@@ -103,10 +103,32 @@ def butterworth2(fc_hz):
                   lambda f: 1.0 / math.sqrt(1.0 + (f / fc_hz) ** 4), fc_hz=fc_hz)
 
 
+def sallen_key_unity(r1_ohm, r2_ohm, c1_farad, c2_farad):
+    """
+    Unity-gain Sallen-Key low-pass: R1, R2 in series, C1 from the R1/R2 node to the op-amp output,
+    C2 from the (+) input to analog ground. H = 1 / (s^2 R1 R2 C1 C2 + s C2 (R1 + R2) + 1).
+    DC group delay = C2 (R1 + R2) exactly (the s^1 coefficient). Ideal op-amp.
+    """
+    w0 = 1.0 / math.sqrt(r1_ohm * r2_ohm * c1_farad * c2_farad)
+    b1 = c2_farad * (r1_ohm + r2_ohm)
+    b2 = r1_ohm * r2_ohm * c1_farad * c2_farad
+
+    def gain(f):
+        w = 2 * math.pi * f
+        return 1.0 / math.hypot(1.0 - b2 * w * w, b1 * w)
+
+    # -3 dB frequency from |H|^2 = 1/2: b2^2 x^2 + (b1^2 - 2 b2) x - 1 = 0 with x = w^2
+    a_, b_, c_ = b2 * b2, b1 * b1 - 2.0 * b2, -1.0
+    x = (-b_ + math.sqrt(b_ * b_ - 4 * a_ * c_)) / (2 * a_)
+    return Filter(f"Sallen-Key unity gain, R1=R2={r1_ohm:g} ohm, C1={c1_farad * 1e9:g} nF, C2={c2_farad * 1e9:g} nF",
+                  b1, gain, fc_hz=math.sqrt(x) / (2 * math.pi))
+
+
 # preset name -> (input filter, output filter)
 PRESETS = {
     "original-rc": (rc_ladder2(1500.0, 220e-9), rc1(1500.0, 220e-9)),
     "butterworth-1k": (butterworth2(1000.0), butterworth2(1000.0)),
+    "sk-11k-20n-10n": (sallen_key_unity(11e3, 11e3, 20e-9, 10e-9), sallen_key_unity(11e3, 11e3, 20e-9, 10e-9)),
     "rc1-3k3-10n": (rc1(3300.0, 10e-9), rc1(3300.0, 10e-9)),
     "none": (None, None),
 }
