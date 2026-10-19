@@ -12,7 +12,7 @@ The plant is a pure delayed feedback path: a mic reading at tick n contains
 f[k] * (output written k ticks earlier), with f[0] = 0 (a reading cannot depend on the
 sample written after it).
 
-Run:  python3 tests/test_feedback_alignment.py
+Run:  python3 -m unittest tests/test_feedback_alignment.py
 """
 import numpy as np
 
@@ -56,12 +56,18 @@ def residual_feedback_db(F_hat, shifted, steps=4000):
     return 10 * np.log10(num / den)
 
 
+import unittest
+
+
+class FeedbackAlignment(unittest.TestCase):
+    def test_shifted_pairing_removes_feedback_original_does_not(self):
+        F_hat = calibrate()
+        old = residual_feedback_db(F_hat, shifted=False)
+        new = residual_feedback_db(F_hat, shifted=True)
+        print(f"\nfeedback left in reference: original pairing {old:6.1f} dB, fixed pairing {new:6.1f} dB")
+        self.assertLess(new, -25.0)
+        self.assertGreater(old, new + 15.0)
+
+
 if __name__ == "__main__":
-    F_hat = calibrate()
-    old = residual_feedback_db(F_hat, shifted=False)
-    new = residual_feedback_db(F_hat, shifted=True)
-    print(f"feedback left in reference after neutralisation: original pairing {old:6.1f} dB, "
-          f"fixed pairing {new:6.1f} dB")
-    assert new < -25.0, new
-    assert old > new + 15.0, (old, new)
-    print("PASS: the one-sample-shifted pairing removes the feedback; the original pairing does not.")
+    unittest.main(verbosity=2)

@@ -23,7 +23,7 @@ Take-aways from `python3 simulator/mismatch_sweep.py`:
 
 * A 5 % gain error alone caps cancellation at −26 dB; 10 % caps it at −20 dB; 20 % at −14 dB.
 * At 300 Hz, 50 µs of timing error caps it at about −20 dB, and 250 µs at about −7 dB. Timing is the binding constraint.
-* **Causality decides everything.** The acoustic head start is about 1.0 ms. The original RC-filter circuit adds about 1.7 ms of delay, which is **non-causal**; active 1 kHz Butterworth filters bring it to about 0.8 ms, leaving a thin margin (calculated, not measured).
+* **Delay decides a lot.** The acoustic head start is about 1.02 ms. The original RC-filter circuit plus the DAC hold adds about 1.45 ms, so the controller would have to predict the noise ~0.43 ms ahead (−5.7 dB for random 70–300 Hz noise with no prediction). Active 1 kHz Butterworth filters bring the total to about 0.58 ms, leaving ≈0.45 ms for ISR time, amplifier and speaker delay (calculated, not measured). `tools/timing_tool.py` redoes this with your measured numbers.
 * Cancellation is local: the quiet zone is roughly $\lambda/10$ across, i.e. centimetres at 300 Hz. The HIL model's 2 m result relies on the woofer sitting within ~12 cm of the air slot.
 
 What is **not** claimed anywhere in this repo: zero-error cancellation, real-world validated performance, or a measured baffle insertion loss. (An earlier version claimed "0.0000000000 RMS / 100 % cancelled"; that check subtracted a signal from itself and was removed. `precision_phase_canceller.py` now reports the residual under stated gain/timing errors and labels the perfect-path value as zero by construction.)
@@ -42,12 +42,15 @@ Sound-blocker/
 │   └── window_anc_fxlms.ino            # Teensy 4.x 128-tap normalized leaky FxLMS (4 kHz) - NOT compiled/tested on hardware here
 ├── kid_friendly_anc/                   # Teaching demos (single steady tone)
 ├── simulator/
-│   ├── mismatch_sweep.py               # Gain / timing / causality limits (start here)
+│   ├── mismatch_sweep.py               # Gain / timing / delay-budget limits (start here)
 │   ├── simulate_realistic_hil.py       # Most detailed model
 │   ├── simulate_window_anc.py          # Toy FxLMS model
 │   ├── simulate_youtube_traffic.py     # Toy model on a traffic recording
 │   └── input_youtube.wav               # Third-party recording; confirm you may use/redistribute it
-├── tests/test_feedback_alignment.py    # Proves the firmware feedback-index fix
+├── tools/
+│   ├── timing_model.py                 # Delay-budget arithmetic (shared)
+│   └── timing_tool.py                  # Budget, measure ISR time over USB serial, change settings
+├── tests/                              # test_feedback_alignment.py, test_timing_tool.py
 ├── tablet_app/index.html               # Tone/phase/timing lab (simulated speaker plane only)
 └── HARDWARE_AND_BAFFLE_GUIDE.md        # Wiring, filter design, delay budget, baffle
 ```
@@ -57,7 +60,10 @@ Sound-blocker/
 ```bash
 pip install -r requirements.txt          # also needs ffmpeg for simulate_youtube_traffic.py
 python3 simulator/mismatch_sweep.py      # what limits cancellation (fast, no audio)
-python3 tests/test_feedback_alignment.py # firmware index check
+python3 tools/timing_tool.py budget --preset butterworth-1k     # offline delay budget
+python3 tools/timing_tool.py measure --port /dev/cu.usbmodemXXXX # real ISR time from the Teensy
+python3 tools/timing_tool.py set --port /dev/cu.usbmodemXXXX mu 0.012   # also: anc on|off, leak, calibrate
+python3 -m unittest discover -s tests -p "test_*.py"   # firmware-index and timing-tool tests
 python3 simulator/simulate_realistic_hil.py   # most detailed model (about a minute)
 python3 precision_anc/precision_phase_canceller.py [file.wav]
 python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
@@ -68,7 +74,7 @@ python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
 
 * The acoustic paths, baffle and glass in every simulator are modelled filters, not measurements.
 * The firmware has not been compiled or run on a Teensy in this repo's history of testing; time the ISR (`micros()`) before trusting it.
-* The design is marginal for causality; the analog filter delay must be measured.
+* The delay budget is marginal; the analog filter, amplifier and woofer delays must be measured, and the ISR time read from the board (`timing_tool.py measure`, untested against real hardware).
 * Wind noise, multiple noise directions, a moving listener and non-linear speaker behaviour at high excursion are only crudely modelled.
 * Safety: calibration noise and divergence can be loud; start with the amplifier at minimum.
 

@@ -6,15 +6,17 @@
  * ============================================================================
  *
  * TIMING (read this before trusting the loop to cancel anything):
- * - Sample Rate (Fs): 4,000 Hz (period 250 us). Output is a zero-order hold, so the
- *   sample/hold stage alone adds on the order of 0.25-0.4 ms.
- * - The ISR work (2x analogRead, 128-tap FxLMS, SPI write) is NOT measured here. Time it
- *   on your board (micros() at ISR entry/exit); it must stay well under 250 us.
+ * - Sample Rate (Fs): 4,000 Hz (period 250 us). Output is a zero-order hold, which adds
+ *   about half a sample period (0.125 ms) on average.
+ * - The ISR work (2x analogRead, 128-tap FxLMS, SPI write) is timed by the firmware itself:
+ *   send "?timing" over serial, or run `python3 tools/timing_tool.py measure --port <port>`.
+ *   The worst case must stay well under 250 us.
  * - The dominant delay is the ANALOG anti-alias / reconstruction filters, not the code.
- *   See HARDWARE_AND_BAFFLE_GUIDE.md: with the original passive RC filters it is >1.3 ms,
- *   more than the ~1.0 ms of acoustic head start, so broadband cancellation is impossible.
- *   Use the active Butterworth filters in the guide (or a higher sample rate).
- * - Run `python3 simulator/mismatch_sweep.py` for the causality budget.
+ *   See HARDWARE_AND_BAFFLE_GUIDE.md: the original passive RC filters total about 1.45 ms
+ *   with the hold, against about 1.0 ms of acoustic head start, so the controller would have
+ *   to predict the noise ~0.4 ms ahead, which limits broadband reduction badly. The active
+ *   Butterworth filters in the guide total about 0.58 ms.
+ * - `python3 tools/timing_tool.py budget` prints the full delay budget.
  *
  * PINOUT (Teensy 4.0):
  * - Pin A0 (14): Reference Mic Preamp Input (Outdoor Mic, 0-3.3V, 1.65V bias)
@@ -30,6 +32,8 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <IntervalTimer.h>
+#include <string.h>
+#include <stdlib.h>
 
 // ============================================================================
 // 1. DSP & ALGORITHM CONFIGURATION
@@ -102,6 +106,37 @@ volatile bool divergence_flag = false;
 
 IntervalTimer ancTimer;
 
+// Runtime-adjustable parameters (defaults from the #defines above; change over serial with
+// "set mu <v>" / "set leak <v>", see tools/timing_tool.py). 32-bit float writes are atomic
+// on the Cortex-M7, so the ISR can read them without locking.
+volatile float g_mu   = MU_FXLMS;
+volatile float g_leak = LEAKAGE_FACTOR;
+
+// ISR timing instrumentation (cycle counter, 1 tick = 1 / F_CPU_ACTUAL s)
+struct IsrStats {
+  uint32_t n;
+  uint64_t exec_sum;     // total cycles spent inside ancStep()
+  uint32_t exec_max;     // worst-case cycles inside ancStep()
+  uint32_t int_min;      // shortest / longest cycles between consecutive ISR entries
+  uint32_t int_max;
+  uint32_t overruns;     // ISR runs that took longer than one sample period
+};
+volatile IsrStats isrStats[3];            // indexed by SystemState at ISR entry
+volatile uint32_t lastIsrCycles = 0;
+volatile bool haveLastIsr = false;
+const uint32_t PERIOD_CYCLES = (uint32_t)(F_CPU_ACTUAL / 4000UL);
+
+void resetIsrStats() {
+  for (int i = 0; i < 3; i++) {
+    isrStats[i].n = 0;
+    isrStats[i].exec_sum = 0;
+    isrStats[i].exec_max = 0;
+    isrStats[i].int_min = 0xFFFFFFFFUL;
+    isrStats[i].int_max = 0;
+    isrStats[i].overruns = 0;
+  }
+}
+
 // Fast deterministic PRNG (Linear Congruential Generator) for calibration noise
 uint32_t prng_state = 0x12345678;
 inline float fastWhiteNoise() {
@@ -170,7 +205,8 @@ void startCalibration() {
 // ============================================================================
 // 5. HARD REAL-TIME 4,000 Hz INTERRUPT SERVICE ROUTINE (ISR)
 // ============================================================================
-void FASTRUN ancISR() {
+// One control step (read mics, FxLMS, write DAC). Wrapped by ancISR() below, which times it.
+static inline void ancStep() {
   // 1. Sample both microphones immediately (12-bit SAR ADC: 0..4095)
   float raw_ref = ((float)analogRead(PIN_REF_MIC) - ADC_MIDPOINT) * ADC_SCALE;
   float raw_err = ((float)analogRead(PIN_ERR_MIC) - ADC_MIDPOINT) * ADC_SCALE;
@@ -303,10 +339,10 @@ void FASTRUN ancISR() {
     // 2h. Normalized Leaky FxLMS Weight Update:
     // Since speaker outputs -y(n), residual error is e(n) = d(n) - [S * y](n).
     // Gradient descent update: W[k] = LEAK * W[k] + (mu / power) * e(n) * xf(n-k)
-    float norm_step = (MU_FXLMS * e_n) / xf_power;
+    float norm_step = (g_mu * e_n) / xf_power;
     pw = idx_w;
     for (int k = 0; k < W_TAPS; k++) {
-      W[k] = (LEAKAGE_FACTOR * W[k]) + norm_step * xf_buf[pw];
+      W[k] = (g_leak * W[k]) + norm_step * xf_buf[pw];
       pw = (pw + 1) & (W_TAPS - 1);
     }
 
@@ -329,6 +365,29 @@ void FASTRUN ancISR() {
   telemetry_count++;
 }
 
+// Timer ISR: times ancStep() with the CPU cycle counter and records the interval between
+// consecutive ISR entries (jitter). The measurement itself costs a few cycles.
+void FASTRUN ancISR() {
+  uint32_t t0 = ARM_DWT_CYCCNT;
+  SystemState st = sysState;
+  ancStep();
+  uint32_t t1 = ARM_DWT_CYCCNT;
+
+  volatile IsrStats &S = isrStats[st];
+  uint32_t exec = t1 - t0;
+  S.n++;
+  S.exec_sum += exec;
+  if (exec > S.exec_max) S.exec_max = exec;
+  if (exec > PERIOD_CYCLES) S.overruns++;
+  if (haveLastIsr) {
+    uint32_t iv = t0 - lastIsrCycles;
+    if (iv < S.int_min) S.int_min = iv;
+    if (iv > S.int_max) S.int_max = iv;
+  }
+  lastIsrCycles = t0;
+  haveLastIsr = true;
+}
+
 // ============================================================================
 // 6. ARDUINO SETUP & BACKGROUND TELEMETRY LOOP
 // ============================================================================
@@ -348,12 +407,17 @@ void setup() {
   delay(500);
   Serial.println(F("=========================================================="));
   Serial.println(F(" Open-Window Active Noise Control (FxLMS) — Teensy 4.0"));
-  Serial.println(F(" Commands: 't' = Toggle ANC ON/OFF | 'c' = Recalibrate"));
+  Serial.println(F(" Keys: 't' toggle ANC | 'c' recalibrate. Lines: ?timing ?params set anc|mu|leak"));
   Serial.println(F("=========================================================="));
 
   startCalibration();
 
   // Start hardware timer interrupt every 250 microseconds (4,000 Hz)
+  // Make sure the cycle counter used for ISR timing is running
+  ARM_DEMCR |= ARM_DEMCR_TRCENA;
+  ARM_DWT_CTRL |= ARM_DWT_CTRL_CYCCNTENA;
+  resetIsrStats();
+
   ancTimer.begin(ancISR, SAMPLE_PERIOD_US);
 }
 
@@ -384,24 +448,128 @@ void handleButton() {
   wasDown = down;
 }
 
+// ----------------------------------------------------------------------------
+// Serial interface.
+//  * Single keys (old behaviour): 't' toggle ANC/bypass, 'c' recalibrate.
+//  * Line commands for tools/timing_tool.py. Replies start with '@' so they cannot be
+//    confused with the human-readable telemetry:
+//      ?timing          ISR timing report since the last report (then resets the counters)
+//      ?params          current settings
+//      set anc on|off   ANC active / bypass (ignored while calibrating)
+//      set mu <v>       FxLMS step size, 0.0005 .. 0.1
+//      set leak <v>     leakage factor, 0.999 .. 1.0
+//      calibrate        start the 3 s secondary-path calibration
+// ----------------------------------------------------------------------------
+static const char* stateName(int st) {
+  return st == STATE_CALIBRATING ? "CALIBRATING" : (st == STATE_ANC_ACTIVE ? "ACTIVE" : "BYPASS");
+}
+
+void printTiming() {
+  IsrStats snap[3];
+  noInterrupts();
+  for (int i = 0; i < 3; i++) {
+    snap[i].n = isrStats[i].n;
+    snap[i].exec_sum = isrStats[i].exec_sum;
+    snap[i].exec_max = isrStats[i].exec_max;
+    snap[i].int_min = isrStats[i].int_min;
+    snap[i].int_max = isrStats[i].int_max;
+    snap[i].overruns = isrStats[i].overruns;
+  }
+  resetIsrStats();
+  haveLastIsr = false;                   // the gap while reporting is not ISR jitter
+  interrupts();
+
+  const float us_per_cycle = 1.0e6f / (float)F_CPU_ACTUAL;
+  for (int i = 0; i < 3; i++) {
+    if (snap[i].n == 0) continue;
+    Serial.print(F("@TIMING state=")); Serial.print(stateName(i));
+    Serial.print(F(" n=")); Serial.print(snap[i].n);
+    Serial.print(F(" exec_us_avg=")); Serial.print((float)snap[i].exec_sum / (float)snap[i].n * us_per_cycle, 3);
+    Serial.print(F(" exec_us_max=")); Serial.print(snap[i].exec_max * us_per_cycle, 3);
+    if (snap[i].int_max > 0) {
+      Serial.print(F(" interval_us_min=")); Serial.print(snap[i].int_min * us_per_cycle, 3);
+      Serial.print(F(" interval_us_max=")); Serial.print(snap[i].int_max * us_per_cycle, 3);
+    }
+    Serial.print(F(" overruns=")); Serial.print(snap[i].overruns);
+    Serial.print(F(" period_us=")); Serial.println(SAMPLE_PERIOD_US);
+  }
+  Serial.println(F("@END"));
+}
+
+void printParams() {
+  Serial.print(F("@PARAMS state=")); Serial.print(stateName(sysState));
+  Serial.print(F(" fs_hz=")); Serial.print((int)SAMPLE_RATE_HZ);
+  Serial.print(F(" w_taps=")); Serial.print(W_TAPS);
+  Serial.print(F(" s_taps=")); Serial.print(S_TAPS);
+  Serial.print(F(" mu=")); Serial.print((float)g_mu, 6);
+  Serial.print(F(" leak=")); Serial.print((float)g_leak, 6);
+  Serial.print(F(" cpu_hz=")); Serial.println((uint32_t)F_CPU_ACTUAL);
+}
+
+void handleLine(char* line) {
+  if (strcmp(line, "?timing") == 0) {
+    printTiming();
+  } else if (strcmp(line, "?params") == 0) {
+    printParams();
+  } else if (strcmp(line, "calibrate") == 0) {
+    startCalibration();
+    Serial.println(F("@OK calibrating"));
+  } else if (strcmp(line, "set anc on") == 0 || strcmp(line, "set anc off") == 0) {
+    if (sysState == STATE_CALIBRATING) {
+      Serial.println(F("@ERR busy calibrating"));
+    } else {
+      sysState = (line[8] == 'n') ? STATE_ANC_ACTIVE : STATE_ANC_BYPASS;
+      Serial.println(F("@OK anc"));
+    }
+  } else if (strncmp(line, "set mu ", 7) == 0) {
+    float v = atof(line + 7);
+    if (v >= 0.0005f && v <= 0.1f) { g_mu = v; Serial.println(F("@OK mu")); }
+    else Serial.println(F("@ERR mu out of range 0.0005..0.1"));
+  } else if (strncmp(line, "set leak ", 9) == 0) {
+    float v = atof(line + 9);
+    if (v >= 0.999f && v <= 1.0f) { g_leak = v; Serial.println(F("@OK leak")); }
+    else Serial.println(F("@ERR leak out of range 0.999..1.0"));
+  } else {
+    Serial.println(F("@ERR unknown command"));
+  }
+}
+
+void handleSerial() {
+  static char buf[48];
+  static uint8_t len = 0;
+  while (Serial.available() > 0) {
+    char c = (char)Serial.read();
+    if (len == 0 && (c == 't' || c == 'T' || c == 'c' || c == 'C')) {
+      // Single-key shortcuts (work with or without a trailing newline in the serial monitor)
+      if (c == 't' || c == 'T') {
+        if (sysState == STATE_ANC_ACTIVE) {
+          sysState = STATE_ANC_BYPASS;
+          Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
+        } else if (sysState == STATE_ANC_BYPASS) {
+          sysState = STATE_ANC_ACTIVE;
+          Serial.println(F("[ANC] Mode -> ACTIVE"));
+        }
+      } else {
+        startCalibration();
+      }
+    } else if (c == '\n' || c == '\r') {
+      if (len > 0) {
+        buf[len] = 0;
+        handleLine(buf);
+        len = 0;
+      }
+    } else if (len < sizeof(buf) - 1) {
+      buf[len++] = c;
+    } else {
+      len = 0;                           // overlong line: drop it
+    }
+  }
+}
+
 void loop() {
   handleButton();
 
-  // Handle Serial commands
-  if (Serial.available() > 0) {
-    char cmd = Serial.read();
-    if (cmd == 't' || cmd == 'T') {
-      if (sysState == STATE_ANC_ACTIVE) {
-        sysState = STATE_ANC_BYPASS;
-        Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
-      } else if (sysState == STATE_ANC_BYPASS) {
-        sysState = STATE_ANC_ACTIVE;
-        Serial.println(F("[ANC] Mode -> ACTIVE"));
-      }
-    } else if (cmd == 'c' || cmd == 'C') {
-      startCalibration();
-    }
-  }
+  handleSerial();
 
   // Print acoustic telemetry every 0.5 seconds (2,000 samples @ 4 kHz)
   if (telemetry_count >= 2000) {

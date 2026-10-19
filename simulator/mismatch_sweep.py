@@ -12,18 +12,24 @@ is only allowed what real hardware has:
     drift), and
   * CAUSALITY: the anti-noise for a broadband signal can only use what the
     reference mic has already heard. If the electronics are slower than the
-    acoustic head start, the controller must predict the future, which no
-    filter can do for noise.
+    acoustic head start, the controller must predict the noise ahead, which
+    works for tonal content and degrades quickly for random broadband noise.
 
 Part 1  tone residual  |1 - g*exp(-j*2*pi*f*dt)|   (closed form, checked below)
 Part 2  broadband residual: band-limited noise, anti-noise delayed by dt, via
         sample-accurate FFT delay, measured from actual signals.
-Part 3  causality budget of the documented 35 cm / 25 cm geometry.
+Part 3  delay budget of the documented 35 cm / 25 cm geometry (shared with tools/timing_tool.py).
 
 Run:  python3 simulator/mismatch_sweep.py
 """
 
+import os
+import sys
+
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+import timing_model as tm  # noqa: E402
 
 C_SOUND = 343.0
 FS = 48000
@@ -88,36 +94,19 @@ def main():
     print("   Rule of thumb confirmed: to reach -20 dB you need gain within ~10% AND")
     print("   phase within ~6 deg at the highest frequency (300 Hz: ~55 us!).")
 
-    print("\n Part 3 - causality budget of the documented geometry")
-    ref_to_spk = 0.35 / C_SOUND
-    spk_to_err = 0.25 / C_SOUND
-    head_start = ref_to_spk  # time from ref mic hearing it to wavefront passing the speaker
-    print(f"   acoustic head start (35 cm ref mic -> speaker)      : {head_start * 1e3:6.3f} ms")
-    print(f"   speaker -> error mic (25 cm)                        : {spk_to_err * 1e3:6.3f} ms")
-    margin = (0.35 + 0.25) / C_SOUND - spk_to_err
-    print("   cancellation happens at the error mic, so the time left for electronics is")
-    print(f"   (ref->err acoustic path) - (speaker->err path)      : {margin * 1e3:6.3f} ms")
-    rc2 = 3 * 1500 * 220e-9
-    rc1 = 1500 * 220e-9
-    items = [
-        ("input 2-section passive RC (3RC, original guide)", rc2),
-        ("output 1-section RC reconstruction (RC)", rc1),
-        ("ZOH + ISR sampling (1.5 sample @4kHz)", 1.5 / 4000.0),
-    ]
-    total = 0.0
-    for name, d in items:
-        total += d
-        print(f"   - {name:<52}: {d * 1e3:6.3f} ms")
-    print(f"   total electronics delay (original circuit)          : {total * 1e3:6.3f} ms")
-    print(f"   => margin left: {1e3 * (margin - total):+.3f} ms  "
-          f"({'CAUSAL' if margin - total > 0 else 'NON-CAUSAL: cannot cancel broadband noise'})")
-
-    sk = 1.4142 / (2 * np.pi * 1000.0)
-    total2 = sk + 1.5 / 4000.0 + 1.4142 / (2 * np.pi * 1000.0)
-    print(f"\n   with 2nd-order Butterworth fc=1 kHz in + out (~{sk * 1e3:.2f} ms each) : total {total2 * 1e3:6.3f} ms"
-          f"  margin {1e3 * (margin - total2):+.3f} ms")
-    print("   (group delay approximations at low frequency; a higher ISR rate, e.g. 8-16 kHz,")
-    print("    shrinks the ZOH/ISR term and lets the anti-alias filters move higher.)")
+    print("\n Part 3 - delay budget of the documented geometry (35 cm ref->speaker, 25 cm speaker->error)")
+    print(" (same model as tools/timing_tool.py; ISR time is not included until you measure it)")
+    for name in ("original-rc", "butterworth-1k"):
+        d_in, d_out, desc = tm.PRESETS[name]
+        bud = tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)
+        print()
+        print(tm.format_budget(bud, f"{name}: {desc}"))
+    d_in, d_out, _ = tm.PRESETS["original-rc"]
+    short = -tm.compute_budget(in_filter_s=d_in, out_filter_s=d_out)["margin_s"]
+    res = broadband_residual_db(x, 1.0, short)
+    print("\n   A negative margin is a SOFT limit: the controller must predict the noise ahead.")
+    print(f"   With no prediction at all, a {short * 1e6:.0f} us shortfall leaves {res:.1f} dB for 70-300 Hz noise (Part 2 method).")
+    print("   Tonal engine harmonics are predictable and do better; random tyre noise does not.")
     print("=" * 74)
 
 

@@ -18,10 +18,11 @@ This design uses **SAR ADCs** and an **SPI DAC (`MCP4921`)**, but the converters
 |---|---|
 | Original 2-section passive RC input filter, $R=1.5\text{ k}\Omega$, $C=220\text{ nF}$ (**do not use**) | $3RC \approx 0.99\text{ ms}$ (and its $-3\text{ dB}$ point is $\approx 181\text{ Hz}$, **not** 482 Hz: two cascaded RC sections do not give the single-section cutoff) |
 | 1-section RC reconstruction filter, same values | $RC \approx 0.33\text{ ms}$ |
-| Zero-order hold + ISR sampling at 4 kHz | $\approx 0.375\text{ ms}$ |
-| **Total with the original circuit** | **$\approx 1.7\text{ ms} > 1.0\text{ ms}$: not causal** |
+| Zero-order hold at 4 kHz (half a sample period) | $0.125\text{ ms}$ |
+| ISR execution | measure it: `python3 tools/timing_tool.py measure` |
+| **Total with the original circuit (before ISR time)** | **$\approx 1.45\text{ ms} > 1.0\text{ ms}$: the controller would have to predict the noise $\approx 0.43\text{ ms}$ ahead** |
 
-So the original circuit could not cancel broadband traffic noise. Use active 2nd-order Butterworth (Sallen-Key) filters instead, about $0.23\text{ ms}$ each at $f_c = 1\text{ kHz}$ ($\approx 0.83\text{ ms}$ total, a thin margin). Run `python3 simulator/mismatch_sweep.py` for the arithmetic. Raising the ISR rate to 8 kHz or more shrinks the sampling term and lets the filters move higher, at the cost of re-tuning `SAMPLE_RATE_HZ` and the filter lengths in the firmware. **None of these numbers has been measured on a built board**; measure the real mic-to-speaker delay with a scope before trusting them.
+That is a soft limit, not a switch: tonal engine harmonics can be predicted, but for random broadband noise the model in `simulator/mismatch_sweep.py` gives only about $-5.7\text{ dB}$ for 70–300 Hz noise. Use active 2nd-order Butterworth (Sallen-Key) filters instead, about $0.23\text{ ms}$ each at $f_c = 1\text{ kHz}$ ($\approx 0.58\text{ ms}$ total with the hold, leaving $\approx 0.45\text{ ms}$ for ISR time, amplifier and speaker delay). `python3 tools/timing_tool.py budget --preset original-rc` (or `butterworth-1k`) prints the arithmetic and accepts your own measured delays. Raising the ISR rate to 8 kHz or more shrinks the hold term and lets the filters move higher, at the cost of re-tuning `SAMPLE_RATE_HZ` and the filter lengths in the firmware. **None of these numbers has been measured on a built board**; measure the real mic-to-speaker delay with a scope and the ISR time with `timing_tool.py measure`, and feed both back into `timing_tool.py budget`.
 
 ### Master Wiring Diagram
 
@@ -153,4 +154,4 @@ If a window is wide open ($60\text{+}\text{ cm}$), high-frequency street noise (
 4. **Verify Cancellation:**
    - Once calibration finishes, the Serial Monitor prints `Outdoor RMS`, `Indoor Error RMS` and `Error/Ref level` every $0.5\text{ seconds}$.
    - `Error/Ref level` compares two different microphones and is not an attenuation figure. Instead, toggle `ANC ON` and `BYPASS` (`t`, or the button on pin 2) and compare the **`Indoor Error RMS`** between the two states over several seconds of similar traffic.
-   - Before expecting any cancellation, check the delay budget above with an oscilloscope: if mic-to-speaker delay exceeds the acoustic head start, the controller cannot work.
+   - Before expecting any cancellation, check the delay budget above with an oscilloscope and `tools/timing_tool.py measure`: if mic-to-speaker delay exceeds the acoustic head start, the controller must predict the noise and broadband reduction collapses.
