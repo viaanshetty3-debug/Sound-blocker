@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Open-Window ANC — Live Tablet Lab</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --red: #f87171;
+      --blue: #38bdf8;
+      --green: #4ade80;
+      --amber: #fbbf24;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
+    body { background: var(--bg); color: var(--text); padding: 14px; max-width: 960px; margin: 0 auto; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+    h1 { font-size: 1.25rem; font-weight: 700; }
+    .badge { background: #0284c7; color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+    canvas { width: 100%; height: 230px; background: #090d16; border-radius: 8px; border: 1px solid var(--border); display: block; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; margin-top: 8px; color: var(--muted); }
+    .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; }
+    button {
+      padding: 12px 14px; border-radius: 10px; border: none; font-size: 0.95rem; font-weight: 700;
+      cursor: pointer; transition: transform 0.1s, opacity 0.2s; color: #0f172a;
+    }
+    button:active { transform: scale(0.98); }
+    .btn-start { background: var(--green); }
+    .btn-anc { background: var(--blue); }
+    .btn-calib { background: var(--amber); }
+    .btn-mic { background: #c084fc; }
+    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; margin-bottom: 12px; }
+    .metric-box { background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+    .metric-val { font-size: 1.4rem; font-weight: 800; margin-top: 4px; }
+    .slider-group { margin-top: 10px; }
+    .slider-group label { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+    input[type="range"] { width: 100%; accent-color: var(--blue); height: 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔊 Open-Window Active Noise Canceller — Tablet Lab</h1>
+    <span class="badge" id="statusBadge">READY TO START</span>
+  </header>
+
+  <div class="metrics">
+    <div class="metric-box">
+      <div style="font-size:0.78rem;color:var(--muted)">INCOMING BASS (RMS)</div>
+      <div class="metric-val" id="inRms" style="color:var(--red)">0.000</div>
+    </div>
+    <div class="metric-box">
+      <div style="font-size:0.78rem;color:var(--muted)">RESIDUAL ROOM ERROR</div>
+      <div class="metric-val" id="errRms" style="color:var(--green)">0.000</div>
+    </div>
+    <div class="metric-box">
+      <div style="font-size:0.78rem;color:var(--muted)">BASS CANCELLED (dB)</div>
+      <div class="metric-val" id="attenDb" style="color:var(--blue)">0.0 dB</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <canvas id="scope" width="800" height="260"></canvas>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--red)"></i>1. Incoming Traffic Bass Wave</span>
+      <span><i class="dot" style="background:var(--blue)"></i>2. Speaker Anti-Noise Wave (180° Flipped)</span>
+      <span><i class="dot" style="background:var(--green)"></i>3. Combined Result in Room (Cancelled!)</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="controls">
+      <button class="btn-start" id="btnStart">▶ 1. Start Audio Engine</button>
+      <button class="btn-anc" id="btnAnc">🛡️ 2. ANC Shield: ON</button>
+      <button class="btn-calib" id="btnMode">🤖 Mode: Auto FxLMS (128 Knobs)</button>
+      <button class="btn-mic" id="btnMic">🎤 Use Tablet Mic: OFF (Sim)</button>
+    </div>
+
+    <div class="slider-group">
+      <label>
+        <span>Traffic Rumble Frequency (Hz)</span>
+        <span id="freqVal">85 Hz + Road Rumble</span>
+      </label>
+      <input type="range" id="freqSlider" min="45" max="180" value="85" />
+    </div>
+
+    <div class="slider-group">
+      <label>
+        <span>Manual Timing Delay (Used when Mode = Manual Slider)</span>
+        <span id="delayVal">7 steps (1.75 ms)</span>
+      </label>
+      <input type="range" id="delaySlider" min="1" max="30" value="7" />
+    </div>
+
+    <div class="slider-group">
+      <label>
+        <span>Manual Anti-Noise Volume (Used when Mode = Manual Slider)</span>
+        <span id="gainVal">0.95x</span>
+      </label>
+      <input type="range" id="gainSlider" min="0" max="150" value="95" />
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // REAL-TIME TABLET FxLMS & WAVE-FLIPPING ENGINE
+    // =========================================================================
+    const W_TAPS = 128;
+    const S_TAPS = 32;
+    let W = new Float32Array(W_TAPS);
+    let S_hat = new Float32Array(S_TAPS);
+    let x_buf = new Float32Array(W_TAPS);
+    let xf_buf = new Float32Array(W_TAPS);
+    let s_buf = new Float32Array(S_TAPS);
+    let src_hist = new Float32Array(W_TAPS);
+    let spk_hist = new Float32Array(S_TAPS);
+
+    // True simulated window + speaker path (delay = 7 steps primary, 3 steps speaker)
+    const P_true = new Float32Array(W_TAPS);
+    const S_true = new Float32Array(S_TAPS);
+    P_true[7] = 0.85; P_true[8] = 0.25; P_true[9] = -0.12;
+    S_true[3] = 0.80; S_true[4] = 0.30; S_true[5] = -0.15;
+    // Initialize S_hat close to S_true
+    for (let i = 0; i < S_TAPS; i++) S_hat[i] = S_true[i] * 0.95;
+
+    let audioCtx = null;
+    let micStream = null;
+    let running = false;
+    let ancOn = true;
+    let autoFxLMS = true;
+    let useRealMic = false;
+    let baseFreq = 85;
+    let manualDelay = 7;
+    let manualGain = 0.95;
+    let phase = 0;
+
+    // Oscilloscope ring buffers
+    const SCOPE_LEN = 256;
+    const scopeIn = new Float32Array(SCOPE_LEN);
+    const scopeAnti = new Float32Array(SCOPE_LEN);
+    const scopeErr = new Float32Array(SCOPE_LEN);
+    let scopeIdx = 0;
+    let rmsInVal = 0, rmsErrVal = 0;
+
+    function dot(a, b, len) {
+      let sum = 0;
+      for (let i = 0; i < len; i++) sum += a[i] * b[i];
+      return sum;
+    }
+
+    function shiftIn(arr, val) {
+      for (let i = arr.length - 1; i > 0; i--) arr[i] = arr[i - 1];
+      arr[0] = val;
+    }
+
+    async function startEngine() {
+      if (running) return;
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+      const fs = audioCtx.sampleRate;
+      const scriptNode = audioCtx.createScriptProcessor(512, 1, 1);
+
+      let decimCounter = 0;
+      const DECIM = Math.max(1, Math.round(fs / 4000));
+      let heldOut = 0;
+
+      scriptNode.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+        let sumIn = 0, sumErr = 0, count = 0;
+
+        for (let i = 0; i < output.length; i++) {
+          decimCounter++;
+          if (decimCounter >= DECIM) {
+            decimCounter = 0;
+            phase += 1 / 4000;
+
+            // 1. Get Outdoor Reference Noise (Synthetic Traffic Bass or Tablet Mic)
+            let u_n = 0;
+            if (useRealMic && micStream) {
+              u_n = input[i] * 2.5;
+            } else {
+              u_n = 0.45 * Math.sin(2 * Math.PI * baseFreq * phase)
+                  + 0.25 * Math.sin(2 * Math.PI * (baseFreq * 1.5) * phase + 0.6)
+                  + 0.15 * Math.sin(2 * Math.PI * (baseFreq * 0.5) * phase);
+            }
+
+            shiftIn(src_hist, u_n);
+            const d_n = dot(P_true, src_hist, W_TAPS); // Primary noise arriving in room
+
+            shiftIn(x_buf, u_n);
+
+            // 2. Compute Anti-Noise Output (-y_n)
+            let speaker_out = 0;
+            if (ancOn) {
+              if (autoFxLMS) {
+                const y_n = dot(W, x_buf, W_TAPS);
+                speaker_out = Math.max(-0.95, Math.min(0.95, -y_n));
+              } else {
+                // Kid-friendly Manual Mode: grab delayed wave & multiply by -1
+                speaker_out = -1.0 * x_buf[manualDelay] * manualGain;
+              }
+            }
+
+            shiftIn(spk_hist, speaker_out);
+            const anti_at_err = dot(S_true, spk_hist, S_TAPS);
+
+            // 3. Superposition in Room: Leftover Error = Noise + Anti-Noise
+            const e_n = d_n + anti_at_err;
+
+            // 4. Update 128 Knobs via Normalized Leaky FxLMS
+            shiftIn(s_buf, u_n);
+            const xf_n = dot(S_hat, s_buf, S_TAPS);
+            shiftIn(xf_buf, xf_n);
+
+            if (ancOn && autoFxLMS) {
+              const power = dot(xf_buf, xf_buf, W_TAPS) + 1e-4;
+              const step = (0.025 * e_n) / power;
+              for (let k = 0; k < W_TAPS; k++) {
+                W[k] = 0.9999 * W[k] + step * xf_buf[k];
+              }
+            }
+
+            // Record for oscilloscope & audio output
+            scopeIn[scopeIdx] = d_n;
+            scopeAnti[scopeIdx] = anti_at_err;
+            scopeErr[scopeIdx] = e_n;
+            scopeIdx = (scopeIdx + 1) % SCOPE_LEN;
+
+            sumIn += d_n * d_n;
+            sumErr += e_n * e_n;
+            count++;
+            heldOut = e_n * 0.45;
+          }
+          output[i] = heldOut;
+        }
+        if (count > 0) {
+          rmsInVal = 0.85 * rmsInVal + 0.15 * Math.sqrt(sumIn / count);
+          rmsErrVal = 0.85 * rmsErrVal + 0.15 * Math.sqrt(sumErr / count);
+        }
+      };
+
+      scriptNode.connect(audioCtx.destination);
+      running = true;
+      document.getElementById('statusBadge').textContent = 'LIVE @ 4,000 Hz';
+      document.getElementById('statusBadge').style.background = '#16a34a';
+      document.getElementById('btnStart').textContent = '✅ Audio Engine Running';
+    }
+
+    // UI Controls
+    document.getElementById('btnStart').onclick = startEngine;
+    document.getElementById('btnAnc').onclick = (e) => {
+      ancOn = !ancOn;
+      e.target.textContent = ancOn ? '🛡️ 2. ANC Shield: ON' : '🔇 2. ANC Shield: OFF (Bypass)';
+      e.target.style.background = ancOn ? 'var(--blue)' : '#64748b';
+    };
+    document.getElementById('btnMode').onclick = (e) => {
+      autoFxLMS = !autoFxLMS;
+      if (!autoFxLMS) W.fill(0);
+      e.target.textContent = autoFxLMS ? '🤖 Mode: Auto FxLMS (128 Knobs)' : '🎛️ Mode: Manual Wave-Flipper';
+    };
+    document.getElementById('btnMic').onclick = async (e) => {
+      if (!running) await startEngine();
+      if (!useRealMic) {
+        try {
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+          });
+          const src = audioCtx.createMediaStreamSource(micStream);
+          useRealMic = true;
+          e.target.textContent = '🎤 Tablet Mic: LIVE';
+          e.target.style.background = '#22c55e';
+        } catch (err) {
+          alert('Microphone permission denied or requires localhost: ' + err.message);
+        }
+      } else {
+        useRealMic = false;
+        e.target.textContent = '🎤 Use Tablet Mic: OFF (Sim)';
+        e.target.style.background = '#c084fc';
+      }
+    };
+
+    document.getElementById('freqSlider').oninput = (e) => {
+      baseFreq = parseFloat(e.target.value);
+      document.getElementById('freqVal').textContent = `${baseFreq} Hz + Road Rumble`;
+    };
+    document.getElementById('delaySlider').oninput = (e) => {
+      manualDelay = parseInt(e.target.value, 10);
+      document.getElementById('delayVal').textContent = `${manualDelay} steps (${(manualDelay * 0.25).toFixed(2)} ms)`;
+    };
+    document.getElementById('gainSlider').oninput = (e) => {
+      manualGain = parseFloat(e.target.value) / 100.0;
+      document.getElementById('gainVal').textContent = `${manualGain.toFixed(2)}x`;
+    };
+
+    // 60 FPS Oscilloscope Renderer
+    const canvas = document.getElementById('scope');
+    const ctx = canvas.getContext('2d');
+    function drawScope() {
+      requestAnimationFrame(drawScope);
+      const w = canvas.width, h = canvas.height, mid = h / 2;
+      ctx.fillStyle = '#090d16';
+      ctx.fillRect(0, 0, w, h);
+
+      // Center zero line
+      ctx.strokeStyle = '#1e293b';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
+
+      function plotWave(buf, color, lineWidth) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lineWidth;
+        ctx.beginPath();
+        for (let i = 0; i < SCOPE_LEN; i++) {
+          const idx = (scopeIdx + i) % SCOPE_LEN;
+          const x = (i / (SCOPE_LEN - 1)) * w;
+          const y = mid - buf[idx] * (h * 0.42);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      plotWave(scopeIn, '#f87171', 2.0);     // Red: Incoming Traffic Bass
+      plotWave(scopeAnti, '#38bdf8', 2.0);   // Blue: 180-deg Flipped Anti-Noise
+      plotWave(scopeErr, '#4ade80', 3.0);    // Green: Combined Result in Room
+
+      document.getElementById('inRms').textContent = rmsInVal.toFixed(3);
+      document.getElementById('errRms').textContent = rmsErrVal.toFixed(3);
+      const db = 20 * Math.log10((rmsErrVal + 1e-6) / (rmsInVal + 1e-6));
+      document.getElementById('attenDb').textContent = running ? `${db.toFixed(1)} dB` : '0.0 dB';
+    }
+    drawScope();
+  </script>
+</body>
+</html>
