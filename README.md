@@ -1,65 +1,77 @@
-# Open-Window Active Noise Control (ANC) System — `Sound-blocker`
+# Open-Window Active Noise Control (ANC) — `Sound-blocker`
 
 **Authors:** `viaanshetty3-debug` & `lishirao-star`  
 **License:** MIT
 
-A complete hardware, firmware, and precision Python acoustic phase-cancellation system for blocking outdoor street traffic noise ($40\text{–}350\text{ Hz}$ bass rumble + high-frequency horns) from entering through an open window using a **Hybrid Passive Foam Window Baffle + Active Opposite-Phase ($180^\circ$) Speaker**.
+An experimental hardware, firmware and Python simulation project for reducing low-frequency street-traffic noise ($\approx 70\text{–}300\text{ Hz}$) coming through an open window, using a **foam-lined window baffle plus an active feed-forward (FxLMS) speaker**.
+
+> **Status: simulation and unbuilt design. Nothing here has been measured on a real window.**  
+> The numbers below come from models, and the more realistic the model, the smaller the benefit. Read "What the simulations say" before quoting any figure.
 
 ---
 
-## Project Structure
+## What the simulations say
+
+| Model | Noise reduction | Why it differs |
+|---|---|---|
+| `simulate_window_anc.py` (toy) | −18.7 dB (synthetic rumble) | Ideal converters, **no analog filter delay**, hand-made acoustic paths |
+| `simulate_youtube_traffic.py` (toy) | −21.1 dB bass band; "−26.4 dB hybrid" | Same toy assumptions, plus a baffle that is just an **assumed** 0.14 gain |
+| `simulate_realistic_hil.py` (most detailed) | **≈ −7 to −9 dB** in 70–200 Hz, ≈ −6 dB full-band, at 2 m | 12-bit converters, analog-filter delay, 3D image-source room, non-linear woofer |
+| `mismatch_sweep.py` | Closed-form limits | Gain error, timing error and causality of an *ideal* controller |
+
+Take-aways from `python3 simulator/mismatch_sweep.py`:
+
+* A 5 % gain error alone caps cancellation at −26 dB; 10 % caps it at −20 dB; 20 % at −14 dB.
+* At 300 Hz, 50 µs of timing error caps it at about −20 dB, and 250 µs at about −7 dB. Timing is the binding constraint.
+* **Causality decides everything.** The acoustic head start is about 1.0 ms. The original RC-filter circuit adds about 1.7 ms of delay, which is **non-causal**; active 1 kHz Butterworth filters bring it to about 0.8 ms, leaving a thin margin (calculated, not measured).
+* Cancellation is local: the quiet zone is roughly $\lambda/10$ across, i.e. centimetres at 300 Hz. The HIL model's 2 m result relies on the woofer sitting within ~12 cm of the air slot.
+
+What is **not** claimed anywhere in this repo: zero-error cancellation, real-world validated performance, or a measured baffle insertion loss. (An earlier version claimed "0.0000000000 RMS / 100 % cancelled"; that check subtracted a signal from itself and was removed. `precision_phase_canceller.py` now reports the residual under stated gain/timing errors and labels the perfect-path value as zero by construction.)
+
+---
+
+## Project structure
 
 ```text
 Sound-blocker/
 ├── precision_anc/
-│   ├── precision_phase_canceller.py    # Zero-Error Python Frequency/Phase Detector & Microsecond Timing Engine
-│   ├── live_tablet_server.py           # Live HTTP + Python Backend connecting Tablet WebAudio to Python
-│   └── output/                         # Verified zero-error (0.0000000000 RMS) opposite-phase WAV files
-├── firmware/
-│   └── window_anc_fxlms/
-│       └── window_anc_fxlms.ino        # Pro-level Teensy 4.0 C++ 128-tap Normalized Leaky FxLMS ISR (4,000 Hz)
-├── kid_friendly_anc/
-│   ├── simple_anc.ino                  # Easy-to-read 50-line ESP32 Wave-Flipper + Auto-Tuner firmware
-│   └── simple_anc_demo.py              # 45-line Python demonstration of the 4-step wave cancellation loop
+│   ├── precision_phase_canceller.py    # Tone detection, timing budget, anti-noise with stated gain/timing errors
+│   ├── live_tablet_server.py           # Local HTTP server for the tablet page (127.0.0.1 by default)
+│   └── output/                         # Generated WAVs
+├── firmware/window_anc_fxlms/
+│   └── window_anc_fxlms.ino            # Teensy 4.x 128-tap normalized leaky FxLMS (4 kHz) - NOT compiled/tested on hardware here
+├── kid_friendly_anc/                   # Teaching demos (single steady tone)
 ├── simulator/
-│   ├── simulate_window_anc.py          # Synthetic traffic rumble FxLMS simulator (-18.7 dB cancellation)
-│   ├── simulate_youtube_traffic.py     # Real-world Indian traffic audio test (-21.1 dB bass / -26.4 dB hybrid)
-│   ├── simulate_realistic_hil.py       # 48 kHz 3D Bedroom + 12-bit Hardware-in-the-Loop (HIL) simulator
-│   ├── output/                         # Playable WAV files from synthetic traffic test
-│   ├── output_youtube/                 # Playable WAV files from real YouTube traffic test
-│   └── output_realistic/               # 48 kHz binaural stereo WAVs & spectrum plot at 2.0m listener position
-├── tablet_app/
-│   └── index.html                      # Interactive Tablet/Browser WebAudio Live ANC Oscilloscope Lab
-├── HARDWARE_AND_BAFFLE_GUIDE.md        # Complete pin-by-pin wiring schematic & window baffle build plans
-└── LICENSE                             # MIT License
+│   ├── mismatch_sweep.py               # Gain / timing / causality limits (start here)
+│   ├── simulate_realistic_hil.py       # Most detailed model
+│   ├── simulate_window_anc.py          # Toy FxLMS model
+│   ├── simulate_youtube_traffic.py     # Toy model on a traffic recording
+│   └── input_youtube.wav               # Third-party recording; confirm you may use/redistribute it
+├── tests/test_feedback_alignment.py    # Proves the firmware feedback-index fix
+├── tablet_app/index.html               # Tone/phase/timing lab (simulated speaker plane only)
+└── HARDWARE_AND_BAFFLE_GUIDE.md        # Wiring, filter design, delay budget, baffle
 ```
 
----
-
-## Quick Start
-
-### 1. Run the Precision Zero-Error Phase & Timing Calculator
-Captures or loads incoming audio, detects exact frequencies ($\text{Hz}$), periods ($\text{ms}$), wavelengths ($\text{cm}$), and phase angles ($\phi^\circ$), calculates the exact microsecond hold time ($t_{\text{wait}} = t_{\text{acoustic}} - t_{\text{compute}} - t_{\text{hardware}}$), and applies a 64-tap Blackman-windowed Sinc fractional delay + $-1.000000\times$ phase inversion:
+## Quick start
 
 ```bash
-# Analyze default traffic audio & generate opposite-phase speaker WAV:
-python3 precision_anc/precision_phase_canceller.py
-
-# Record 3 seconds from live Android Tablet mic, calculate opposite phase, and play to speaker:
-python3 precision_anc/precision_phase_canceller.py --record-mic --play
+pip install -r requirements.txt          # also needs ffmpeg for simulate_youtube_traffic.py
+python3 simulator/mismatch_sweep.py      # what limits cancellation (fast, no audio)
+python3 tests/test_feedback_alignment.py # firmware index check
+python3 simulator/simulate_realistic_hil.py   # most detailed model (about a minute)
+python3 precision_anc/precision_phase_canceller.py [file.wav]
+python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
+# Tablet on the same Wi-Fi: add --host 0.0.0.0 (no authentication; trusted networks only)
 ```
 
-### 2. Launch the Live Tablet WebAudio + Python Server
-```bash
-python3 precision_anc/live_tablet_server.py
-```
-Then open **`http://localhost:8080`** in Chrome on your tablet or laptop.
+## Known limitations
 
-### 3. Run the 3D Room & Hardware-in-the-Loop Simulators
-```bash
-# Easy 45-line demonstration:
-python3 kid_friendly_anc/simple_anc_demo.py
+* The acoustic paths, baffle and glass in every simulator are modelled filters, not measurements.
+* The firmware has not been compiled or run on a Teensy in this repo's history of testing; time the ISR (`micros()`) before trusting it.
+* The design is marginal for causality; the analog filter delay must be measured.
+* Wind noise, multiple noise directions, a moving listener and non-linear speaker behaviour at high excursion are only crudely modelled.
+* Safety: calibration noise and divergence can be loud; start with the amplifier at minimum.
 
-# Full 48 kHz 3D Bedroom & Hardware-in-the-Loop (HIL) simulation:
-python3 simulator/simulate_realistic_hil.py
-```
+## Change log of this audit
+
+Replaced the circular "zero-error" check; fixed a one-sample secondary-path offset in the HIL calibration (S_hat NMSE −6.1 → −20.2 dB), the image-source coordinates, and a one-sample feedback-neutralisation misalignment in the firmware; corrected the guide's RC-filter maths (−3 dB at 181 Hz, not 482 Hz; ~1 ms delay); implemented the documented button; hardened the tablet server; made the tablet demo stop playing `x + (−x)`.

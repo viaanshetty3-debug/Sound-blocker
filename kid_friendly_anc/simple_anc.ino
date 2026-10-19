@@ -2,6 +2,11 @@
  * ============================================================================
  * KID-FRIENDLY ACTIVE NOISE CANCELLER (50 Lines of Easy Code!)
  * Works on a $5 ESP32 (No extra DAC chips needed!)
+ *
+ * EDUCATIONAL DEMO ONLY. The loop timing is set by analogRead() plus a 100 us delay (not an
+ * exact 10 kHz), the ESP32 DAC is 8-bit, and a mic-to-speaker path with no anti-alias or
+ * reconstruction filtering will not cancel real traffic. Expect it to work, at best, on a
+ * steady low tone with a hand-tuned delay.
  * ============================================================================
  *
  * HOW IT WORKS IN 3 EASY STEPS:

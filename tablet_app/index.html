@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Precision Zero-Error ANC — Python + Tablet Lab</title>
+  <title>Anti-Noise Phase &amp; Timing Lab</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -50,8 +50,8 @@
 </head>
 <body>
   <header>
-    <h1>🎯 Precision Zero-Error Acoustic Phase & Timing Canceller</h1>
-    <span class="badge" id="statusBadge">PYTHON ENGINE CONNECTED</span>
+    <h1>🎯 Anti-Noise Phase &amp; Timing Lab</h1>
+    <span class="badge" id="statusBadge" style="background:#64748b">PYTHON ENGINE: CHECKING…</span>
   </header>
 
   <div class="metrics">
@@ -60,16 +60,16 @@
       <div class="metric-val" id="domFreq" style="color:var(--amber)">85.000 Hz</div>
     </div>
     <div class="metric-box">
-      <div style="font-size:0.74rem;color:var(--muted)">EXACT HOLD TIME</div>
+      <div style="font-size:0.74rem;color:var(--muted)">DIGITAL HOLD TIME</div>
       <div class="metric-val" id="holdUs" style="color:var(--blue)">1003.01 µs</div>
     </div>
     <div class="metric-box">
-      <div style="font-size:0.74rem;color:var(--muted)">RESIDUAL ERROR</div>
-      <div class="metric-val" id="errRms" style="color:var(--green)">0.00000000</div>
+      <div style="font-size:0.74rem;color:var(--muted)">RESIDUAL RMS (with errors)</div>
+      <div class="metric-val" id="errRms" style="color:var(--green)">–</div>
     </div>
     <div class="metric-box">
-      <div style="font-size:0.74rem;color:var(--muted)">CANCELLED (%)</div>
-      <div class="metric-val" id="cancelPct" style="color:var(--green)">100.0000%</div>
+      <div style="font-size:0.74rem;color:var(--muted)">LEVEL vs. UNCANCELLED</div>
+      <div class="metric-val" id="cancelPct" style="color:var(--green)">–</div>
     </div>
   </div>
 
@@ -77,17 +77,17 @@
     <canvas id="scope" width="860" height="240"></canvas>
     <div class="legend">
       <span><i class="dot" style="background:var(--red)"></i>1. Captured Incoming Wave</span>
-      <span><i class="dot" style="background:var(--blue)"></i>2. Python Exact Opposite-Phase Speaker Wave (-1.000000x)</span>
-      <span><i class="dot" style="background:var(--green)"></i>3. Superposition Result at Speaker (0.00000000 Error)</span>
+      <span><i class="dot" style="background:var(--blue)"></i>2. Anti-noise from the (imperfect) speaker path</span>
+      <span><i class="dot" style="background:var(--green)"></i>3. Sum at the speaker plane (what is left over)</span>
     </div>
   </div>
 
   <div class="card">
     <div class="controls">
-      <button class="btn-start" id="btnStart">▶ 1. Start Live Speaker Audio</button>
-      <button class="btn-py" id="btnAnalyze">⚡ 2. Capture & Run Python Calculator</button>
-      <button class="btn-anc" id="btnAnc">🛡️ 3. Opposite-Phase Speaker: ON</button>
-      <button class="btn-mic" id="btnMic">🎤 Source: Precision Multi-Tone</button>
+      <button class="btn-start" id="btnStart">▶ 1. Start simulated audio (tone model)</button>
+      <button class="btn-py" id="btnAnalyze">⚡ 2. Run Python calculator</button>
+      <button class="btn-anc" id="btnAnc">🛡️ 3. Anti-noise: ON</button>
+      <button class="btn-mic" id="btnMic">🎤 Source: Test tones</button>
     </div>
 
     <div class="slider-group">
@@ -100,7 +100,30 @@
 
     <div class="slider-group">
       <label>
-        <span>Mic-to-Speaker Distance (cm) — Python recalculates exact µs travel time</span>
+        <span>Speaker gain error (%) — how much quieter the anti-noise is than the noise</span>
+        <span id="gainVal">5 %</span>
+      </label>
+      <input type="range" id="gainSlider" min="0" max="30" value="5" />
+    </div>
+
+    <div class="slider-group">
+      <label>
+        <span>Timing error (µs) — extra delay from filters, sampling, speed-of-sound drift</span>
+        <span id="delayVal">50 µs</span>
+      </label>
+      <input type="range" id="delaySlider" min="0" max="500" value="50" />
+    </div>
+
+    <p id="note" style="font-size:0.78rem;color:var(--muted);margin-top:10px">
+      With 0 % / 0 µs the residual is exactly zero because the model subtracts a signal from itself;
+      that is arithmetic, not a measurement. Move the sliders to see how fast cancellation degrades.
+      This page simulates the speaker plane only. It does not drive a real speaker path, and a live
+      system can only react to what its mic has already heard.
+    </p>
+
+    <div class="slider-group">
+      <label>
+        <span>Mic-to-Speaker Distance (cm) — Python recalculates the travel time</span>
         <span id="distVal">35.0 cm</span>
       </label>
       <input type="range" id="distSlider" min="10" max="80" value="35" />
@@ -128,7 +151,7 @@
     </div>
 
     <div class="card">
-      <h3 style="font-size:0.95rem;margin-bottom:6px;color:var(--blue)">⏱️ Python Microsecond Timing Budget (Zero-Error)</h3>
+      <h3 style="font-size:0.95rem;margin-bottom:6px;color:var(--blue)">⏱️ Timing Budget</h3>
       <table>
         <tbody id="timingTableBody">
           <tr><td style="color:var(--muted)">Waiting for Python engine...</td></tr>
@@ -152,6 +175,8 @@
     let useRealMic = false;
     let baseFreq = 85.0;
     let distCm = 35.0;
+    let gainErr = 0.05;      // fraction
+    let delayErrUs = 50.0;   // microseconds
     let phase = 0;
 
     // Generate or capture a 4096-sample audio frame at 48,000 Hz to send to Python
@@ -182,10 +207,15 @@
             samples: samples,
             sample_rate: FS,
             distance_cm: distCm,
-            hw_delay_us: 12.5
+            hw_delay_us: 12.5,
+            gain_error: gainErr,
+            delay_error_us: delayErrUs
           })
         });
+        if (!res.ok) throw new Error('server returned ' + res.status);
         const data = await res.json();
+        const badge = document.getElementById('statusBadge');
+        badge.textContent = 'PYTHON ENGINE CONNECTED'; badge.style.background = '#16a34a';
         const d = data.details;
         const b = data.budget;
         const w = data.wave_slice;
@@ -195,8 +225,8 @@
           document.getElementById('domFreq').textContent = `${d.dominant_tone.freq_hz.toFixed(3)} Hz`;
         }
         document.getElementById('holdUs').textContent = `${b['4_exact_digital_wait_time_us'].toFixed(2)} µs`;
-        document.getElementById('errRms').textContent = ancOn ? b.residual_error_rms.toFixed(8) : b.incoming_rms_at_speaker.toFixed(6);
-        document.getElementById('cancelPct').textContent = ancOn ? `${b.cancellation_percentage.toFixed(4)}%` : '0.0000%';
+        document.getElementById('errRms').textContent = (ancOn ? b.residual_error_rms : b.incoming_rms_at_speaker).toFixed(6);
+        document.getElementById('cancelPct').textContent = ancOn ? `${b.attenuation_db.toFixed(1)} dB` : '0.0 dB';
 
         // Update oscilloscope buffers with exact Python waveforms
         for (let i = 0; i < Math.min(SCOPE_LEN, w.incoming.length); i++) {
@@ -223,20 +253,24 @@
         tBody.innerHTML = `
           <tr><td>Mic-to-Speaker Distance</td><td style="font-weight:700">${b.mic_to_speaker_distance_cm.toFixed(2)} cm (c = ${b.speed_of_sound_m_s} m/s)</td></tr>
           <tr><td>1. Acoustic Air Travel Time</td><td style="color:var(--amber);font-weight:700">${b['1_acoustic_travel_time_us'].toFixed(3)} µs</td></tr>
-          <tr><td>2. Python DSP Compute Time</td><td>${b['2_python_dsp_per_sample_us'].toFixed(4)} µs / sample</td></tr>
-          <tr><td>3. Hardware DAC + Amp Delay</td><td>${b['3_hardware_dac_amp_delay_us'].toFixed(3)} µs</td></tr>
-          <tr><td>4. Exact Digital Hold Time</td><td style="color:var(--blue);font-weight:700">${b['4_exact_digital_wait_time_us'].toFixed(3)} µs (${b.exact_wait_samples_at_48khz.toFixed(3)} samples)</td></tr>
-          <tr><td>5. Phase Inversion Applied</td><td style="color:var(--green);font-weight:700">${b.polarity_multiplier.toFixed(6)}x (${b.phase_inversion_applied_deg.toFixed(4)}°)</td></tr>
+          <tr><td>2. numpy negation time (not real-time DSP)</td><td>${b['2_python_dsp_per_sample_us'].toFixed(4)} µs / sample</td></tr>
+          <tr><td>3. DAC + amp delay (excl. analog filters)</td><td>${b['3_hardware_dac_amp_delay_us'].toFixed(3)} µs</td></tr>
+          <tr><td>4. Digital hold time</td><td style="color:var(--blue);font-weight:700">${b['4_exact_digital_wait_time_us'].toFixed(3)} µs (${b.exact_wait_samples_at_48khz.toFixed(3)} samples)</td></tr>
+          <tr><td>5. Polarity multiplier</td><td style="color:var(--green);font-weight:700">${b.polarity_multiplier.toFixed(1)}x</td></tr>
         `;
       } catch (err) {
         console.error(err);
+        const badge = document.getElementById('statusBadge');
+        badge.textContent = 'PYTHON ENGINE: NOT REACHABLE'; badge.style.background = '#dc2626';
       }
-      btn.textContent = '⚡ 2. Capture & Run Python Calculator';
+      btn.textContent = '⚡ 2. Run Python calculator';
     }
 
     async function startLiveAudio() {
       if (running) return;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: FS, latencyHint: 'interactive' });
+      // ScriptProcessorNode is deprecated (AudioWorklet is the modern replacement) but is
+      // still supported and keeps this demo a single file.
       const scriptNode = audioCtx.createScriptProcessor(1024, 1, 1);
 
       // Exact delay ring buffer in WebAudio matching Python's calculated sample hold
@@ -246,7 +280,10 @@
       scriptNode.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         const output = e.outputBuffer.getChannelData(0);
-        const exactDelaySamples = Math.round(((distCm / 100.0) / 344.632) * FS);
+        // Acoustic travel time to the speaker plane, plus the user-chosen timing error
+        const travelSamples = ((distCm / 100.0) / 344.632) * FS;
+        const exactDelaySamples = Math.round(travelSamples);
+        const antiDelaySamples = Math.round(travelSamples + delayErrUs * 1e-6 * FS);
 
         for (let i = 0; i < output.length; i++) {
           phase += 1.0 / FS;
@@ -264,12 +301,16 @@
           const readIdx = (writeIdx - exactDelaySamples + delayBuf.length) % delayBuf.length;
           const delayedInc = delayBuf[readIdx];
 
-          // Exact opposite-phase wave (-1.0 * delayedInc)
-          const antiWave = ancOn ? (-1.0 * delayedInc) : 0.0;
+          const antiIdx = (writeIdx - antiDelaySamples + delayBuf.length) % delayBuf.length;
+
+          // Anti-noise from an imperfect speaker path (gain error, extra delay; whole-sample
+          // resolution here, the Python side uses sub-sample sinc interpolation).
+          const antiWave = ancOn ? (-(1.0 - gainErr) * delayBuf[antiIdx]) : 0.0;
           const residual = delayedInc + antiWave;
 
-          // Output the combined wave so user hears silence when ANC is ON and loud bass when OFF
-          output[i] = residual * 0.5;
+          // Plays the SIMULATED residual (test-tone model only). In mic mode nothing is
+          // played, to avoid acoustic feedback; the mic frame is only analysed.
+          output[i] = (useRealMic && micStream) ? 0.0 : residual * 0.5;
           writeIdx = (writeIdx + 1) % delayBuf.length;
         }
       };
@@ -284,7 +325,7 @@
     document.getElementById('btnAnalyze').onclick = runPythonCalculator;
     document.getElementById('btnAnc').onclick = (e) => {
       ancOn = !ancOn;
-      e.target.textContent = ancOn ? '🛡️ 3. Opposite-Phase Speaker: ON' : '🔇 3. Opposite-Phase Speaker: OFF';
+      e.target.textContent = ancOn ? '🛡️ 3. Anti-noise: ON' : '🔇 3. Anti-noise: OFF';
       e.target.style.background = ancOn ? 'var(--blue)' : '#64748b';
       runPythonCalculator();
     };
@@ -296,15 +337,15 @@
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
           });
           useRealMic = true;
-          e.target.textContent = '🎤 Source: Live Tablet Mic';
+          e.target.textContent = '🎤 Source: Tablet mic (analysis only, no audio out)';
           e.target.style.background = '#22c55e';
           runPythonCalculator();
         } catch (err) {
-          alert('Mic error: ' + err.message);
+          document.getElementById('note').textContent = 'Mic error: ' + err.message;
         }
       } else {
         useRealMic = false;
-        e.target.textContent = '🎤 Source: Precision Multi-Tone';
+        e.target.textContent = '🎤 Source: Test tones';
         e.target.style.background = 'var(--purple)';
         runPythonCalculator();
       }
@@ -313,6 +354,16 @@
     document.getElementById('freqSlider').oninput = (e) => {
       baseFreq = parseFloat(e.target.value);
       document.getElementById('freqVal').textContent = `${baseFreq.toFixed(1)} Hz (+ Harmonics)`;
+      runPythonCalculator();
+    };
+    document.getElementById('gainSlider').oninput = (e) => {
+      gainErr = parseFloat(e.target.value) / 100.0;
+      document.getElementById('gainVal').textContent = `${e.target.value} %`;
+      runPythonCalculator();
+    };
+    document.getElementById('delaySlider').oninput = (e) => {
+      delayErrUs = parseFloat(e.target.value);
+      document.getElementById('delayVal').textContent = `${delayErrUs.toFixed(0)} µs`;
       runPythonCalculator();
     };
     document.getElementById('distSlider').oninput = (e) => {

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
-Hyper-Realistic 3D Room & Hardware-in-the-Loop (HIL) Window ANC Simulator
-=========================================================================
-Models the complete continuous-time 48,000 Hz physical acoustics alongside
-the exact 4,000 Hz 12-bit quantized Teensy 4.0 ISR, with NO idealized shortcuts:
+3D Room & Hardware-in-the-Loop (HIL) Window ANC Simulator
+=========================================================
+The most detailed model in this repo: 48,000 Hz physical acoustics alongside the
+4,000 Hz 12-bit quantized Teensy ISR. It is still a MODEL: the baffle and glass are
+illustrative filters (not measured), the room is an image-source box with a Sabine
+average absorption, and nothing here has been compared with a real window. Treat the
+numbers as "what this model predicts", not as measured performance.
+
+Contents:
 
 1. 3D Bedroom Image-Source Acoustics (4.2m x 3.6m x 2.7m, RT60 ~ 0.36s):
    - Separate 3D paths from Window Air-Exit Slot and 5.25" Woofer (12 cm apart)
@@ -40,7 +45,7 @@ FS_ISR = FS_PHYS // DECIM       # 4,000 Hz
 
 C_SOUND = 343.0                 # Speed of sound in air (m/s) at 20 C
 
-# Teensy 4.0 FxLMS Firmware Parameters (Exact match to window_anc_fxlms.ino)
+# Teensy 4.0 FxLMS Firmware Parameters (Algorithm matches window_anc_fxlms.ino; step sizes differ slightly)
 W_TAPS = 128
 S_TAPS = 64
 MU_S_IDENT = 0.08
@@ -53,12 +58,13 @@ EPSILON = 1e-4
 # 2. 3D IMAGE-SOURCE ROOM IMPULSE RESPONSE GENERATOR
 # ============================================================================
 def fractional_delay_tap(ir, delay_sec, gain, fs=FS_PHYS):
-    """Add a fractional-sample delayed impulse using 4-tap Lagrange/sinc window."""
+    """Add a fractional-sample delayed impulse using 2-tap linear interpolation
+    (adequate below ~2 kHz at 48 kHz; it attenuates higher frequencies a little)."""
     exact_idx = delay_sec * fs
     base = int(np.floor(exact_idx))
     frac = exact_idx - base
     if 1 <= base < len(ir) - 3:
-        # Linear + cubic fractional interpolation
+        # Linear fractional interpolation
         ir[base] += gain * (1.0 - frac)
         ir[base + 1] += gain * frac
 
@@ -90,7 +96,8 @@ def compute_room_ir(src_xyz, dst_xyz, room_dims=(4.2, 3.6, 2.7), rt60=0.35, max_
                 if order > 5:
                     continue
                 # Mirror coordinates around room center [0..Lx], [-Ly/2..Ly/2], [-Hz/2..Hz/2]
-                ix = (2 * nx * Lx) + (sx if nx % 2 == 0 else (Lx - sx))
+                # Image of a source in a box with walls at x=0 and x=Lx: m*Lx + (sx or Lx-sx)
+                ix = (nx * Lx) + (sx if nx % 2 == 0 else (Lx - sx))
                 iy = (ny * Ly) + (sy if ny % 2 == 0 else -sy)
                 iz = (nz * Hz) + (sz if nz % 2 == 0 else -sz)
 
@@ -311,7 +318,12 @@ def run_realistic_hil():
 
     calib_steps = int(3.0 * FS_ISR)
     for _ in range(calib_steps):
-        # 1. Read ADCs at start of ISR (affected by previous DAC outputs in y_hist_true)
+        # 1. Read ADCs at start of ISR. Same bookkeeping as the control loop below:
+        #    shift first, so S_true_4k[k] multiplies the DAC value written k ticks ago
+        #    (previously this loop read before shifting, which made the plant one tick
+        #    slower during calibration and gave S_hat a 1-sample offset).
+        y_hist_true[1:] = y_hist_true[:-1]
+        y_hist_true[0] = 0.0
         e_raw = np.dot(S_true_4k, y_hist_true) + rng.normal(0.0, 0.0015)
         x_raw = np.dot(F_true_4k, y_hist_true) + rng.normal(0.0, 0.0020)
 
@@ -329,8 +341,7 @@ def run_realistic_hil():
         v_n = quantize_12bit_dac(rng.uniform(-0.18, 0.18))
         v_cone = np.tanh(1.10 * v_n) + 0.02 * (v_n ** 2)
 
-        # Shift into physical history (for next ISR tick) and calibration buffer
-        y_hist_true[1:] = y_hist_true[:-1]
+        # Record into physical history and calibration buffer
         y_hist_true[0] = v_cone
 
         y_buf_calib[1:] = y_buf_calib[:-1]
@@ -412,8 +423,10 @@ def run_realistic_hil():
         e_n = HPF_ALPHA * (err_prev_out + adc_err - err_prev_in)
         err_prev_in, err_prev_out = adc_err, e_n
 
-        # 4. Acoustic feedback neutralization
-        x_clean = x_n - np.dot(F_hat, y_buf_ctrl)
+        # 4. Acoustic feedback neutralization. y_buf_ctrl[j] holds the output from j+1 ticks
+        #    ago (current output not yet pushed), while F_hat[k] was learned against the
+        #    output k ticks ago, so the pairing is F_hat[j+1] with y_buf_ctrl[j].
+        x_clean = x_n - np.dot(F_hat[1:], y_buf_ctrl[:-1])
 
         # 5. Shift into control filter buffer
         x_buf[1:] = x_buf[:-1]

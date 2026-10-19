@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 """
-PRECISION ZERO-ERROR ACOUSTIC PHASE & TIMING CANCELLER
-======================================================
+PHASE & TIMING CALCULATOR FOR FEED-FORWARD ANTI-NOISE
+=====================================================
 Authors: viaanshetty3-debug & lishirao-star
 
 What this program does:
-1. Captures / loads an incoming sound wave x(t).
-2. Detects exact acoustic details:
-   - Fundamental frequency (Hz) & dominant harmonics to sub-mHz accuracy
-     using Blackman-Harris FFT + parabolic interpolation + exact Least-Squares
-     harmonic phase/amplitude solver.
-   - Exact wave period T (ms / us), wavelength lambda (m / cm), amplitude, and
-     initial phase angle phi (degrees & radians).
-3. Calculates the exact microsecond timing budget required for zero-error
-   cancellation:
-   - Acoustic air travel time (Mic -> Speaker): t_acoustic = d_mic_spk / c_sound
-   - Measured Python/DSP computation time:      t_compute
-   - Hardware DAC + Amplifier output delay:     t_hardware
-   - Exact required digital hold delay:         t_wait = t_acoustic - t_compute - t_hardware
-   - Applies a 64-tap windowed-Sinc fractional-sample delay filter + exact 180.0000°
-     phase inversion (-1.000000x) so that even sub-sample microsecond timing is
-     aligned with ZERO phase error.
-4. Outputs the exact opposite-phase speaker waveform and plays it / verifies
-   100.0000% destructive interference (0.000000 residual error).
+1. Loads an incoming sound x(t) (a WAV file, a live mic capture, or a test tone set).
+2. Estimates dominant tones: Blackman-Harris FFT + log-parabolic peak interpolation,
+   then a least-squares fit of amplitude and phase for every detected tone.
+3. Computes the timing budget for a feed-forward canceller:
+       t_wait = t_acoustic - t_compute - t_hardware
+   and builds the inverted, delayed anti-noise (-1 x, sub-sample windowed-sinc delay).
+4. Reports what that anti-noise would leave behind when the speaker path is NOT
+   perfect (gain error and timing error you can set), using the actual signals.
+
+IMPORTANT - what this does NOT prove:
+  * With perfect gain and timing the residual is exactly zero BY CONSTRUCTION
+    (it is the identity x - x = 0). That is arithmetic, not evidence of anything.
+  * This script processes a recording that is already fully known. A real
+    controller cannot do that: it only has samples the reference mic has already
+    heard, so broadband noise is cancelled only as far as the system is causal
+    (see simulator/mismatch_sweep.py).
+  * It models one point (the speaker plane). Silence there says nothing about the
+    listener's ears; the quiet zone around the cancellation point is roughly
+    lambda/10 in size, i.e. centimetres at 300 Hz.
 """
 
 import math
@@ -43,6 +44,10 @@ C_SOUND = 331.3 + 0.606 * TEMP_CELSIUS  # Exact speed of sound (344.632 m/s at 2
 
 DEFAULT_MIC_TO_SPK_M = 0.350        # 35.0 cm (0.350 m) from Outdoor Mic to Speaker
 DEFAULT_HW_DAC_DELAY_US = 12.5      # Hardware DAC + Analog Amp propagation delay (us)
+                                    # NOTE: excludes analog anti-alias/reconstruction filters, which
+                                    # add ~0.5-1.5 ms in the RC design (see HARDWARE_AND_BAFFLE_GUIDE.md)
+DEFAULT_GAIN_ERROR = 0.05           # assumed 5% speaker/amp/mic gain error (adjustable)
+DEFAULT_DELAY_ERROR_US = 50.0       # assumed 50 us timing error (adjustable)
 
 
 # ============================================================================
@@ -205,6 +210,8 @@ def compute_zero_error_cancellation(
     fs=FS,
     mic_to_speaker_m=DEFAULT_MIC_TO_SPK_M,
     hw_dac_delay_us=DEFAULT_HW_DAC_DELAY_US,
+    gain_error=DEFAULT_GAIN_ERROR,
+    delay_error_us=DEFAULT_DELAY_ERROR_US,
 ):
     """
     1. Analyzes the incoming sound wave.
@@ -212,12 +219,15 @@ def compute_zero_error_cancellation(
     3. Computes the exact time required for sound to travel from Mic -> Speaker
        and subtracts computation + hardware delay to determine the exact digital
        hold time `t_wait_us`.
-    4. Generates the exact opposite-phase speaker output (`speaker_anti_wave`)
-       and verifies that `incoming_at_speaker + speaker_at_speaker == 0.000000`.
+    4. Generates the opposite-phase speaker output (`speaker_anti_wave`).
+       `ideal_identity_rms` is the residual with a perfect speaker path; it is zero
+       by construction and is NOT a validation. `residual_error_rms` is the residual
+       when the speaker path has `gain_error` (fraction, e.g. 0.05 = 5% too quiet)
+       and `delay_error_us` extra delay, which is what real hardware looks like.
     """
     details = analyze_sound_details(waveform, fs=fs)
 
-    # Measure per-sample real-time DSP inversion execution time (us)
+    # Time of one numpy negation (NOT a real-time DSP measurement; kept only as a lower bound)
     t_start_ns = time.perf_counter_ns()
     _ = -1.0 * waveform[:1024]
     per_sample_dsp_us = ((time.perf_counter_ns() - t_start_ns) / 1000.0) / 1024.0
@@ -250,14 +260,20 @@ def compute_zero_error_cancellation(
         waveform, exact_wait_samples + exact_elec_samples
     )
 
-    # 3. Superposition at the speaker plane: Incoming Wave + Opposite-Phase Speaker Wave
-    # Skip the initial propagation delay (`ceil(exact_acoustic_samples) + 32` sinc warmup)
+    # 3. Superposition at the speaker plane.
     warmup = int(math.ceil(exact_acoustic_samples)) + 34
-    residual_wave = incoming_at_speaker + speaker_anti_wave
+    ideal_residual = incoming_at_speaker + speaker_anti_wave
+    ideal_rms = float(np.sqrt(np.mean(ideal_residual[warmup:] ** 2)))
+
+    # Realistic speaker path: gain error and extra delay (computed from the real signals)
+    extra_samples = delay_error_us * 1e-6 * fs
+    speaker_actual = (1.0 - gain_error) * apply_exact_delay_and_invert(
+        waveform, exact_wait_samples + exact_elec_samples + extra_samples
+    )
+    residual_wave = incoming_at_speaker + speaker_actual
 
     rms_in = float(np.sqrt(np.mean(incoming_at_speaker[warmup:] ** 2)))
     rms_res = float(np.sqrt(np.mean(residual_wave[warmup:] ** 2)))
-    cancelled_pct = (1.0 - (rms_res / (rms_in + 1e-18))) * 100.0
     atten_db = 20.0 * math.log10((rms_res + 1e-18) / (rms_in + 1e-18))
 
     timing_budget = {
@@ -268,11 +284,14 @@ def compute_zero_error_cancellation(
         "3_hardware_dac_amp_delay_us": round(hw_dac_delay_us, 3),
         "4_exact_digital_wait_time_us": round(t_wait_us, 3),
         "exact_wait_samples_at_48khz": round(exact_wait_samples, 4),
-        "phase_inversion_applied_deg": 180.0000,
-        "polarity_multiplier": -1.000000,
+        "phase_inversion_applied_deg": 180.0,
+        "polarity_multiplier": -1.0,
         "incoming_rms_at_speaker": round(rms_in, 8),
-        "residual_error_rms": round(rms_res, 10),
-        "cancellation_percentage": round(cancelled_pct, 6),
+        "assumed_gain_error": gain_error,
+        "assumed_delay_error_us": delay_error_us,
+        "ideal_identity_rms": ideal_rms,
+        "residual_error_rms": round(rms_res, 8),
+        "cancellation_percentage": round((1.0 - rms_res / (rms_in + 1e-18)) * 100.0, 3),
         "attenuation_db": round(atten_db, 2),
     }
 
@@ -378,7 +397,7 @@ def main():
     details, budget, inc_wave, opp_wave, res_wave = compute_zero_error_cancellation(waveform)
 
     print("=" * 78)
-    print(" PRECISION ZERO-ERROR ACOUSTIC PHASE & TIMING CALCULATOR")
+    print(" ACOUSTIC PHASE & TIMING CALCULATOR (feed-forward anti-noise)")
     print("=" * 78)
     print(f" Audio Source Analyzed : {source_name}")
     print(f" Sample Rate / Duration: {details['sample_rate_hz']} Hz | {details['duration_sec']} sec")
@@ -394,24 +413,27 @@ def main():
         )
 
     print("-" * 78)
-    print(" [2] EXACT MICROSECOND TIMING BUDGET (MIC -> PYTHON -> SPEAKER):")
+    print(" [2] TIMING BUDGET (MIC -> DSP -> SPEAKER):")
     print(f"   • Mic-to-Speaker Distance       : {budget['mic_to_speaker_distance_cm']:.2f} cm (Speed of Sound = {budget['speed_of_sound_m_s']} m/s)")
     print(f"   • 1. Acoustic Air Travel Time   : {budget['1_acoustic_travel_time_us']:>10.3f} us")
-    print(f"   • 2. Python DSP Compute Time    : {budget['2_python_dsp_per_sample_us']:>10.4f} us / sample")
+    print(f"   • 2. numpy negation time        : {budget['2_python_dsp_per_sample_us']:>10.4f} us / sample (not a real-time DSP figure)")
     print(f"   • 3. Hardware DAC + Amp Delay   : {budget['3_hardware_dac_amp_delay_us']:>10.3f} us")
-    print(f"   • 4. EXACT DIGITAL HOLD TIME    : {budget['4_exact_digital_wait_time_us']:>10.3f} us ({budget['exact_wait_samples_at_48khz']:.4f} samples @ 48 kHz)")
-    print(f"   • 5. Phase Inversion Multiplier : {budget['polarity_multiplier']:.6f}x (Exact {budget['phase_inversion_applied_deg']:.4f}° shift)")
+    print(f"   • 4. Digital hold time          : {budget['4_exact_digital_wait_time_us']:>10.3f} us ({budget['exact_wait_samples_at_48khz']:.4f} samples @ 48 kHz)")
+    print(f"   • 5. Polarity multiplier        : {budget['polarity_multiplier']:.1f}x")
     print("-" * 78)
-    print(" [3] ZERO-ERROR SUPERPOSITION VERIFICATION AT SPEAKER:")
-    print(f"   • Incoming Wave RMS             : {budget['incoming_rms_at_speaker']:.8f}")
-    print(f"   • Residual Error After Cancel   : {budget['residual_error_rms']:.10f}")
-    print(f"   • Total Sound Cancelled         : {budget['cancellation_percentage']:.6f}% ({budget['attenuation_db']:.1f} dB)")
+    print(" [3] RESIDUAL AT THE SPEAKER PLANE (one point, not at a listener):")
+    print(f"   • Incoming wave RMS             : {budget['incoming_rms_at_speaker']:.6f}")
+    print(f"   • Perfect-path residual         : {budget['ideal_identity_rms']:.1e}  <- zero by construction (x - x), not a result")
+    print(f"   • Assumed speaker-path errors   : gain {100 * budget['assumed_gain_error']:.0f}%, timing {budget['assumed_delay_error_us']:.0f} us")
+    print(f"   • Residual with those errors    : {budget['residual_error_rms']:.6f}  ({budget['attenuation_db']:.1f} dB)")
+    print("   • Causality: this uses the whole recording; a live system can only use past")
+    print("     samples. See simulator/mismatch_sweep.py for the achievable range.")
     print("=" * 78)
 
     # Save output WAV files
     p_inc = os.path.join(out_dir, "1_captured_incoming_wave.wav")
     p_opp = os.path.join(out_dir, "2_exact_opposite_phase_speaker_wave.wav")
-    p_res = os.path.join(out_dir, "3_cancelled_zero_error_result.wav")
+    p_res = os.path.join(out_dir, "3_residual_with_assumed_errors.wav")
     p_stereo = os.path.join(out_dir, "4_stereo_L_incoming_R_opposite.wav")
 
     save_wav_mono(p_inc, inc_wave)
@@ -422,7 +444,7 @@ def main():
     print("\nSaved Precision Audio Files:")
     print(f"  1. Incoming Wave          : {p_inc}")
     print(f"  2. Opposite-Phase Output  : {p_opp}  <-- Sent directly to Speaker")
-    print(f"  3. Cancelled Result (0.0) : {p_res}")
+    print(f"  3. Residual w/ errors     : {p_res}")
     print(f"  4. Stereo Dual-Channel    : {p_stereo} (Left = Incoming, Right = -Incoming)")
 
     # Attempt to play the opposite-phase wave via termux-media-player if requested

@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-Real-World YouTube Traffic Audio ANC Simulator
-==============================================
+Traffic-Recording ANC Simulator (TOY MODEL)
+===========================================
+Uses a real traffic recording as the noise source, but everything between the source and
+the room is a hand-made model: ideal converters, no analog filter delay, hand-made acoustic
+paths, and a passive baffle that is just a 380/650 Hz low-pass times a hard-coded 0.14
+gain (an assumption, not a measurement of any real foam baffle). The "hybrid" number
+below therefore depends mostly on those assumptions. See simulate_realistic_hil.py and
+mismatch_sweep.py for the more careful models (about -7 dB bass reduction there).
+Recording provenance: a third-party YouTube clip; make sure you have the right to use it.
+
 Video: "India Traffic Jam Sound || Heavy Traffic Noise" (https://youtu.be/qNK0MmYodLg)
 
 Analyzes the acoustic spectrum of the downloaded YouTube recording and simulates:
@@ -201,8 +209,9 @@ def main():
     print(f"    - Low-Freq Bass & Engine Rumble (30 - 300 Hz)   : {bass_pct:5.1f}% of acoustic energy")
     print(f"    - Mid-Range Vehicle Horns       (300 - 1200 Hz) : {mid_pct:5.1f}% of acoustic energy")
     print(f"    - High-Pitched Honking & Hiss   (1200 - 8000 Hz): {high_pct:5.1f}% of acoustic energy")
-    print("    -> Notice how Indian traffic is dominated by mid/high-pitched horns (>300 Hz)!")
-    print("       Let's see how Active ANC alone vs. Hybrid Baffle + Active ANC handles this.")
+    above = mid_pct + high_pct
+    print(f"    -> {above:.0f}% of this clip's energy is above 300 Hz, where the woofer does nothing.")
+    print("       Compare active-only against hybrid below (baffle gain is an assumption).")
 
     # ------------------------------------------------------------------------
     # 2. RUN 4,000 Hz FxLMS CONTROLLER ON THE LOW-FREQUENCY PATH (< 300 Hz)
@@ -302,7 +311,7 @@ def main():
 
     # Model the Passive Foam-Lined S-Curve Window Baffle on frequencies > 320 Hz:
     # Acoustic foam + two 90-degree bends provide progressive high-frequency absorption
-    # (~16-22 dB reduction above 400 Hz)
+    # (the 0.14 gain, about -17 dB, is an ASSUMED value, not measured)
     baffle_lp1 = BiquadFilter.lowpass(380.0, FS_FULL)
     baffle_lp2 = BiquadFilter.lowpass(650.0, FS_FULL)
     high_mid_baffled = [
@@ -335,7 +344,7 @@ def main():
 
     print("\n[2] SIMULATION RESULTS ON YOUR YOUTUBE TRAFFIC AUDIO (t = 4s to 20s):")
     print("-" * 74)
-    print(f"  Low-Frequency Bass Band (<320 Hz) FxLMS Cancellation : {bass_atten_db:>6.1f} dB")
+    print(f"  Bass band (<320 Hz) reduction in this toy model      : {bass_atten_db:>6.1f} dB")
     print("-" * 74)
     print(f"  Scenario A: Bare Open Window (No Baffle, No ANC)     :   0.0 dB (Baseline)")
     print(f"  Scenario B: Active FxLMS Woofer Only (No Baffle)     : {db_ratio(rms_anc, rms_bare):>6.1f} dB total")

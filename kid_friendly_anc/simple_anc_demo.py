@@ -2,8 +2,10 @@
 """
 KID-FRIENDLY NOISE CANCELLER IN PYTHON (Easy to Read & Understand!)
 ===================================================================
-Shows how just 4 simple lines of math inside a `for` loop can cancel
-out a loud traffic bass wave by waiting for the wave and multiplying by -1!
+Shows the idea behind anti-noise: wait for the wave, multiply by -1, add it back.
+This works so well here ONLY because the noise is one steady 100 Hz sine whose delay
+is already known. Real traffic is random and broadband, so real cancellation is much
+smaller (see simulator/mismatch_sweep.py and simulate_realistic_hil.py).
 """
 
 import math

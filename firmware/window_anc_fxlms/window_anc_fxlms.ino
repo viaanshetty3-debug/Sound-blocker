@@ -5,12 +5,16 @@
  * Algorithm: Two-Stage Normalized Leaky FxLMS with Auto-Calibration
  * ============================================================================
  *
- * HARDWARE TIMING & LATENCY BUDGET:
- * - Sample Rate (Fs):        4,000 Hz (Sample period = 250 us)
- * - Dual SAR ADC Conversion: ~4 us
- * - 128-Tap FxLMS Math:      ~3 us (on 600 MHz ARM Cortex-M7 FPU)
- * - MCP4921 SPI DAC Write:   ~1.2 us (at 20 MHz SPI clock)
- * - Total Electronic Delay:  < 10 us (0.01 ms) -> Beats 1.0 ms acoustic limit!
+ * TIMING (read this before trusting the loop to cancel anything):
+ * - Sample Rate (Fs): 4,000 Hz (period 250 us). Output is a zero-order hold, so the
+ *   sample/hold stage alone adds on the order of 0.25-0.4 ms.
+ * - The ISR work (2x analogRead, 128-tap FxLMS, SPI write) is NOT measured here. Time it
+ *   on your board (micros() at ISR entry/exit); it must stay well under 250 us.
+ * - The dominant delay is the ANALOG anti-alias / reconstruction filters, not the code.
+ *   See HARDWARE_AND_BAFFLE_GUIDE.md: with the original passive RC filters it is >1.3 ms,
+ *   more than the ~1.0 ms of acoustic head start, so broadband cancellation is impossible.
+ *   Use the active Butterworth filters in the guide (or a higher sample rate).
+ * - Run `python3 simulator/mismatch_sweep.py` for the causality budget.
  *
  * PINOUT (Teensy 4.0):
  * - Pin A0 (14): Reference Mic Preamp Input (Outdoor Mic, 0-3.3V, 1.65V bias)
@@ -18,8 +22,9 @@
  * - Pin 10 (CS): MCP4921 SPI DAC Chip Select
  * - Pin 11 (MOSI): MCP4921 SPI SDI
  * - Pin 13 (SCK):  MCP4921 SPI SCK
- * - Pin 2:       Pushbutton to GND (Short press: Toggle ANC, Long press: Recalibrate)
- * - Pin 13/LED:  Status LED (Blinking = Calibrating, Solid = ANC Active)
+ * - Pin 2:       Pushbutton to GND (short press: toggle ANC, hold >1 s: recalibrate)
+ * - Pin 13 is the SPI clock (SCK) and also the on-board LED, so the LED just flickers
+ *   with DAC writes. It is not a status indicator; use the Serial monitor for status.
  */
 
 #include <Arduino.h>
@@ -109,7 +114,7 @@ inline float fastWhiteNoise() {
 // 3. LOW-LATENCY SPI DAC WRITE (MCP4921 12-Bit DAC)
 // ============================================================================
 inline void writeDAC(float normalized_sample) {
-  // Soft clip to [-0.95, +0.95] to protect speaker cone and prevent rail clipping
+  // Hard clip to [-0.95, +0.95] to keep the DAC off its rails
   if (normalized_sample > 0.95f)  normalized_sample = 0.95f;
   if (normalized_sample < -0.95f) normalized_sample = -0.95f;
 
@@ -241,11 +246,16 @@ void FASTRUN ancISR() {
   // STAGE 2: REAL-TIME ACTIVE NOISE CANCELLATION (Normalized Leaky FxLMS)
   // --------------------------------------------------------------------------
   if (sysState == STATE_ANC_ACTIVE) {
-    // 2a. Neutralize acoustic feedback from speaker to outdoor reference mic
+    // 2a. Neutralize acoustic feedback from speaker to outdoor reference mic.
+    // y_buf[0] is the output from ONE tick ago here (this tick's output is pushed later),
+    // but F_hat[k] was learned against the output k ticks ago (calibration pushes the current
+    // output before updating). So y_buf[j] pairs with F_hat[j + 1]. The old pairing
+    // (F_hat[j] with y_buf[j]) was one sample off; tests/test_feedback_alignment.py shows it
+    // leaves the feedback un-cancelled while this pairing removes it.
     uint16_t ps = idx_s;
     float fb_est = 0.0f;
-    for (int k = 0; k < S_TAPS; k++) {
-      fb_est += F_hat[k] * y_buf[ps];
+    for (int k = 0; k < S_TAPS - 1; k++) {
+      fb_est += F_hat[k + 1] * y_buf[ps];
       ps = (ps + 1) & (S_TAPS - 1);
     }
     float x_clean = x_n - fb_est;
@@ -300,8 +310,8 @@ void FASTRUN ancISR() {
       pw = (pw + 1) & (W_TAPS - 1);
     }
 
-    // 2i. Safety Watchdog: If weights diverge due to an impulse (e.g. door slam),
-    // automatically reset W(z) while keeping S_hat(z) intact.
+    // 2i. Safety watchdog: y_n beyond the DAC range (clipped at +-0.95) means the filter is
+    // diverging or hit a loud impulse (e.g. door slam): reset W(z), keep S_hat(z).
     if (fabsf(y_n) > 1.5f) {
       for (int k = 0; k < W_TAPS; k++) {
         W[k] = 0.0f;
@@ -347,7 +357,36 @@ void setup() {
   ancTimer.begin(ancISR, SAMPLE_PERIOD_US);
 }
 
+// Pushbutton on PIN_BUTTON: short press toggles ANC/bypass, holding >1 s recalibrates.
+// Polled from loop() with a simple debounce; the ISR is not involved.
+void handleButton() {
+  static bool wasDown = false;
+  static uint32_t downSince = 0;
+  static bool longHandled = false;
+  bool down = (digitalRead(PIN_BUTTON) == LOW);
+  uint32_t now = millis();
+
+  if (down && !wasDown) {
+    downSince = now;
+    longHandled = false;
+  } else if (down && wasDown && !longHandled && (now - downSince) > 1000) {
+    longHandled = true;
+    startCalibration();
+  } else if (!down && wasDown && !longHandled && (now - downSince) > 30) {
+    if (sysState == STATE_ANC_ACTIVE) {
+      sysState = STATE_ANC_BYPASS;
+      Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
+    } else if (sysState == STATE_ANC_BYPASS) {
+      sysState = STATE_ANC_ACTIVE;
+      Serial.println(F("[ANC] Mode -> ACTIVE"));
+    }
+  }
+  wasDown = down;
+}
+
 void loop() {
+  handleButton();
+
   // Handle Serial commands
   if (Serial.available() > 0) {
     char cmd = Serial.read();
@@ -357,7 +396,7 @@ void loop() {
         Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
       } else if (sysState == STATE_ANC_BYPASS) {
         sysState = STATE_ANC_ACTIVE;
-        Serial.println(F("[ANC] Mode -> ACTIVE (Cancelling Bass)"));
+        Serial.println(F("[ANC] Mode -> ACTIVE"));
       }
     } else if (cmd == 'c' || cmd == 'C') {
       startCalibration();
@@ -383,6 +422,9 @@ void loop() {
 
     float rms_ref = sqrtf(sum_ref / (float)count);
     float rms_err = sqrtf(sum_err / (float)count);
+    // NOTE: this compares two DIFFERENT microphones (indoor error vs outdoor reference), whose
+    // gains and positions differ, so it is only a rough level indicator. To judge the effect of
+    // ANC, toggle it ('t' or the button) and compare the Indoor Error RMS between the two states.
     float atten_db = 20.0f * log10f((rms_err + 1e-6f) / (rms_ref + 1e-6f));
 
     if (sysState == STATE_CALIBRATING) {
@@ -394,7 +436,7 @@ void loop() {
       Serial.print(rms_ref, 4);
       Serial.print(F(" | Indoor Error RMS: "));
       Serial.print(rms_err, 4);
-      Serial.print(F(" | Relative Level: "));
+      Serial.print(F(" | Error/Ref level: "));
       Serial.print(atten_db, 1);
       Serial.println(F(" dB"));
     }

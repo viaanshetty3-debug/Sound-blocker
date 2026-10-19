@@ -2,8 +2,17 @@
 """
 Open-Window Active Noise Control (ANC) Acoustic Simulator
 =========================================================
-Simulates the exact physical geometry and two-stage Normalized Leaky FxLMS
-algorithm running in `window_anc_fxlms.ino` at Fs = 4,000 Hz.
+Simulates the geometry and the two-stage Normalized Leaky FxLMS algorithm used in
+`window_anc_fxlms.ino` at Fs = 4,000 Hz.
+
+TOY MODEL - read before quoting any number from this file
+---------------------------------------------------------
+Ideal converters (no quantization), NO analog anti-alias/reconstruction filter delay,
+a single plane-wave direction, and acoustic paths P/S/F that are HAND-MADE impulse
+responses (not measured). Under these assumptions the controller is causal with
+~1 ms to spare, which real hardware with RC filters does not have (see
+simulator/mismatch_sweep.py and simulate_realistic_hil.py, which gives about -7 dB).
+Use this file to study the FxLMS algorithm, not to predict window performance.
 
 Physical Geometry Modeled:
 - Outdoor Reference Mic -> Speaker ( Window Plane ): 35 cm (~1.02 ms)
@@ -291,7 +300,8 @@ def run_simulation():
     energy_removed_pct = (1.0 - (ss_on / ss_off) ** 2) * 100.0
 
     print("-" * 70)
-    print(f"FINAL STEADY-STATE CANCELLATION : {ss_db:.1f} dB ({energy_removed_pct:.1f}% of acoustic bass energy removed)")
+    print(f"STEADY-STATE REDUCTION IN THIS TOY MODEL : {ss_db:.1f} dB ({energy_removed_pct:.1f}% of the modelled energy)")
+    print("(ideal electronics, hand-made paths; see the docstring before quoting this number)")
     print("=" * 70)
 
     # Save WAV files for listening comparison
