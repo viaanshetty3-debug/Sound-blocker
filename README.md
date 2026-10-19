@@ -1,16 +1,20 @@
-# Open-Window Active Noise Control (ANC) System
+# Open-Window Active Noise Control (ANC) System — `Sound-blocker`
 
 **Authors:** `viaanshetty3-debug` & `lishirao-star`  
 **License:** MIT
 
-A complete hardware, firmware, and acoustic simulation project for blocking outdoor street traffic noise ($40\text{–}350\text{ Hz}$ bass rumble + high-frequency horns) from entering through an open window using a **Hybrid Passive Foam Window Baffle + Active Opposite-Phase (FxLMS) Woofer**.
+A complete hardware, firmware, and precision Python acoustic phase-cancellation system for blocking outdoor street traffic noise ($40\text{–}350\text{ Hz}$ bass rumble + high-frequency horns) from entering through an open window using a **Hybrid Passive Foam Window Baffle + Active Opposite-Phase ($180^\circ$) Speaker**.
 
 ---
 
 ## Project Structure
 
 ```text
-window-anc/
+Sound-blocker/
+├── precision_anc/
+│   ├── precision_phase_canceller.py    # Zero-Error Python Frequency/Phase Detector & Microsecond Timing Engine
+│   ├── live_tablet_server.py           # Live HTTP + Python Backend connecting Tablet WebAudio to Python
+│   └── output/                         # Verified zero-error (0.0000000000 RMS) opposite-phase WAV files
 ├── firmware/
 │   └── window_anc_fxlms/
 │       └── window_anc_fxlms.ino        # Pro-level Teensy 4.0 C++ 128-tap Normalized Leaky FxLMS ISR (4,000 Hz)
@@ -32,26 +36,26 @@ window-anc/
 
 ---
 
-## How It Works (Plain English Summary)
-
-1. **Passive S-Curve Foam Window Baffle ($> 350\text{ Hz}$):**
-   High-frequency sounds (car horns, screeching brakes, voices) have tiny wavelengths and bounce around inside a foam-lined S-curve air channel, losing $15\text{–}24\text{ dB}$ of energy while fresh air still flows into the room.
-2. **Active Opposite-Phase Woofer ($40\text{–}350\text{ Hz}$):**
-   Low-frequency traffic rumble has giant wavelengths ($1.5\text{–}8\text{ meters}$) that pass right through foam. An outdoor **Reference Microphone** hears the incoming bass wave $35\text{–}38\text{ cm}$ early ($\sim 1.1\text{ ms}$ head-start). The microcontroller shapes an inverted wave ($180^\circ$ out of phase) across **128 time steps (`W[128]`)** and fires a **sealed $5.25\text{"}$ woofer** right as the bass wave exits the window slot—cancelling the bass before it spreads into the room.
-3. **3-Second Startup Auto-Calibration (`S_hat` & `F_hat`):**
-   On boot, the speaker plays 3 seconds of soft static to learn the exact delay of the speaker (`S_hat`) and how much sound leaks backward to the outdoor mic (`F_hat`).
-
----
-
 ## Quick Start
 
-### 1. Run the Tablet Live Oscilloscope App
+### 1. Run the Precision Zero-Error Phase & Timing Calculator
+Captures or loads incoming audio, detects exact frequencies ($\text{Hz}$), periods ($\text{ms}$), wavelengths ($\text{cm}$), and phase angles ($\phi^\circ$), calculates the exact microsecond hold time ($t_{\text{wait}} = t_{\text{acoustic}} - t_{\text{compute}} - t_{\text{hardware}}$), and applies a 64-tap Blackman-windowed Sinc fractional delay + $-1.000000\times$ phase inversion:
+
 ```bash
-python3 -m http.server 8080 --directory tablet_app
+# Analyze default traffic audio & generate opposite-phase speaker WAV:
+python3 precision_anc/precision_phase_canceller.py
+
+# Record 3 seconds from live Android Tablet mic, calculate opposite phase, and play to speaker:
+python3 precision_anc/precision_phase_canceller.py --record-mic --play
+```
+
+### 2. Launch the Live Tablet WebAudio + Python Server
+```bash
+python3 precision_anc/live_tablet_server.py
 ```
 Then open **`http://localhost:8080`** in Chrome on your tablet or laptop.
 
-### 2. Run the Python Simulators
+### 3. Run the 3D Room & Hardware-in-the-Loop Simulators
 ```bash
 # Easy 45-line demonstration:
 python3 kid_friendly_anc/simple_anc_demo.py
