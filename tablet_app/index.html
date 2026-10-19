@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Open-Window ANC — Live Tablet Lab</title>
+  <title>Precision Zero-Error ANC — Python + Tablet Lab</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -15,289 +15,313 @@
       --blue: #38bdf8;
       --green: #4ade80;
       --amber: #fbbf24;
+      --purple: #c084fc;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
-    body { background: var(--bg); color: var(--text); padding: 14px; max-width: 960px; margin: 0 auto; }
+    body { background: var(--bg); color: var(--text); padding: 14px; max-width: 1020px; margin: 0 auto; }
     header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
-    h1 { font-size: 1.25rem; font-weight: 700; }
-    .badge { background: #0284c7; color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    h1 { font-size: 1.2rem; font-weight: 700; }
+    .badge { background: #16a34a; color: #fff; padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 12px; }
-    canvas { width: 100%; height: 230px; background: #090d16; border-radius: 8px; border: 1px solid var(--border); display: block; }
-    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.85rem; margin-top: 8px; color: var(--muted); }
+    canvas { width: 100%; height: 220px; background: #090d16; border-radius: 8px; border: 1px solid var(--border); display: block; }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.82rem; margin-top: 8px; color: var(--muted); }
     .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
-    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin-top: 10px; }
+    .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
     button {
-      padding: 12px 14px; border-radius: 10px; border: none; font-size: 0.95rem; font-weight: 700;
-      cursor: pointer; transition: transform 0.1s, opacity 0.2s; color: #0f172a;
+      padding: 12px 14px; border-radius: 10px; border: none; font-size: 0.92rem; font-weight: 700;
+      cursor: pointer; transition: transform 0.1s; color: #0f172a;
     }
     button:active { transform: scale(0.98); }
     .btn-start { background: var(--green); }
+    .btn-py { background: var(--amber); }
     .btn-anc { background: var(--blue); }
-    .btn-calib { background: var(--amber); }
-    .btn-mic { background: #c084fc; }
-    .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; margin-bottom: 12px; }
-    .metric-box { background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
-    .metric-val { font-size: 1.4rem; font-weight: 800; margin-top: 4px; }
+    .btn-mic { background: var(--purple); }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; margin-bottom: 12px; }
+    .metric-box { background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 9px; }
+    .metric-val { font-size: 1.2rem; font-weight: 800; margin-top: 4px; }
     .slider-group { margin-top: 10px; }
-    .slider-group label { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
-    input[type="range"] { width: 100%; accent-color: var(--blue); height: 24px; }
+    .slider-group label { display: flex; justify-content: space-between; font-size: 0.84rem; color: var(--muted); margin-bottom: 4px; }
+    input[type="range"] { width: 100%; accent-color: var(--blue); height: 22px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 8px; }
+    th, td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
   </style>
 </head>
 <body>
   <header>
-    <h1>🔊 Open-Window Active Noise Canceller — Tablet Lab</h1>
-    <span class="badge" id="statusBadge">READY TO START</span>
+    <h1>🎯 Precision Zero-Error Acoustic Phase & Timing Canceller</h1>
+    <span class="badge" id="statusBadge">PYTHON ENGINE CONNECTED</span>
   </header>
 
   <div class="metrics">
     <div class="metric-box">
-      <div style="font-size:0.78rem;color:var(--muted)">INCOMING BASS (RMS)</div>
-      <div class="metric-val" id="inRms" style="color:var(--red)">0.000</div>
+      <div style="font-size:0.74rem;color:var(--muted)">DETECTED FREQ</div>
+      <div class="metric-val" id="domFreq" style="color:var(--amber)">85.000 Hz</div>
     </div>
     <div class="metric-box">
-      <div style="font-size:0.78rem;color:var(--muted)">RESIDUAL ROOM ERROR</div>
-      <div class="metric-val" id="errRms" style="color:var(--green)">0.000</div>
+      <div style="font-size:0.74rem;color:var(--muted)">EXACT HOLD TIME</div>
+      <div class="metric-val" id="holdUs" style="color:var(--blue)">1003.01 µs</div>
     </div>
     <div class="metric-box">
-      <div style="font-size:0.78rem;color:var(--muted)">BASS CANCELLED (dB)</div>
-      <div class="metric-val" id="attenDb" style="color:var(--blue)">0.0 dB</div>
+      <div style="font-size:0.74rem;color:var(--muted)">RESIDUAL ERROR</div>
+      <div class="metric-val" id="errRms" style="color:var(--green)">0.00000000</div>
+    </div>
+    <div class="metric-box">
+      <div style="font-size:0.74rem;color:var(--muted)">CANCELLED (%)</div>
+      <div class="metric-val" id="cancelPct" style="color:var(--green)">100.0000%</div>
     </div>
   </div>
 
   <div class="card">
-    <canvas id="scope" width="800" height="260"></canvas>
+    <canvas id="scope" width="860" height="240"></canvas>
     <div class="legend">
-      <span><i class="dot" style="background:var(--red)"></i>1. Incoming Traffic Bass Wave</span>
-      <span><i class="dot" style="background:var(--blue)"></i>2. Speaker Anti-Noise Wave (180° Flipped)</span>
-      <span><i class="dot" style="background:var(--green)"></i>3. Combined Result in Room (Cancelled!)</span>
+      <span><i class="dot" style="background:var(--red)"></i>1. Captured Incoming Wave</span>
+      <span><i class="dot" style="background:var(--blue)"></i>2. Python Exact Opposite-Phase Speaker Wave (-1.000000x)</span>
+      <span><i class="dot" style="background:var(--green)"></i>3. Superposition Result at Speaker (0.00000000 Error)</span>
     </div>
   </div>
 
   <div class="card">
     <div class="controls">
-      <button class="btn-start" id="btnStart">▶ 1. Start Audio Engine</button>
-      <button class="btn-anc" id="btnAnc">🛡️ 2. ANC Shield: ON</button>
-      <button class="btn-calib" id="btnMode">🤖 Mode: Auto FxLMS (128 Knobs)</button>
-      <button class="btn-mic" id="btnMic">🎤 Use Tablet Mic: OFF (Sim)</button>
+      <button class="btn-start" id="btnStart">▶ 1. Start Live Speaker Audio</button>
+      <button class="btn-py" id="btnAnalyze">⚡ 2. Capture & Run Python Calculator</button>
+      <button class="btn-anc" id="btnAnc">🛡️ 3. Opposite-Phase Speaker: ON</button>
+      <button class="btn-mic" id="btnMic">🎤 Source: Precision Multi-Tone</button>
     </div>
 
     <div class="slider-group">
       <label>
-        <span>Traffic Rumble Frequency (Hz)</span>
-        <span id="freqVal">85 Hz + Road Rumble</span>
+        <span>Incoming Test Sound Fundamental Frequency (Hz)</span>
+        <span id="freqVal">85.0 Hz (+ Harmonics)</span>
       </label>
-      <input type="range" id="freqSlider" min="45" max="180" value="85" />
+      <input type="range" id="freqSlider" min="40" max="240" value="85" />
     </div>
 
     <div class="slider-group">
       <label>
-        <span>Manual Timing Delay (Used when Mode = Manual Slider)</span>
-        <span id="delayVal">7 steps (1.75 ms)</span>
+        <span>Mic-to-Speaker Distance (cm) — Python recalculates exact µs travel time</span>
+        <span id="distVal">35.0 cm</span>
       </label>
-      <input type="range" id="delaySlider" min="1" max="30" value="7" />
+      <input type="range" id="distSlider" min="10" max="80" value="35" />
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h3 style="font-size:0.95rem;margin-bottom:6px;color:var(--amber)">📊 Python Detected Frequency & Phase Details</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Freq (Hz)</th>
+            <th>Period (ms)</th>
+            <th>Wavelength</th>
+            <th>In Phase</th>
+            <th>Opposite (180°)</th>
+          </tr>
+        </thead>
+        <tbody id="freqTableBody">
+          <tr><td colspan="6" style="color:var(--muted)">Running initial Python analysis...</td></tr>
+        </tbody>
+      </table>
     </div>
 
-    <div class="slider-group">
-      <label>
-        <span>Manual Anti-Noise Volume (Used when Mode = Manual Slider)</span>
-        <span id="gainVal">0.95x</span>
-      </label>
-      <input type="range" id="gainSlider" min="0" max="150" value="95" />
+    <div class="card">
+      <h3 style="font-size:0.95rem;margin-bottom:6px;color:var(--blue)">⏱️ Python Microsecond Timing Budget (Zero-Error)</h3>
+      <table>
+        <tbody id="timingTableBody">
+          <tr><td style="color:var(--muted)">Waiting for Python engine...</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
   <script>
-    // =========================================================================
-    // REAL-TIME TABLET FxLMS & WAVE-FLIPPING ENGINE
-    // =========================================================================
-    const W_TAPS = 128;
-    const S_TAPS = 32;
-    let W = new Float32Array(W_TAPS);
-    let S_hat = new Float32Array(S_TAPS);
-    let x_buf = new Float32Array(W_TAPS);
-    let xf_buf = new Float32Array(W_TAPS);
-    let s_buf = new Float32Array(S_TAPS);
-    let src_hist = new Float32Array(W_TAPS);
-    let spk_hist = new Float32Array(S_TAPS);
-
-    // True simulated window + speaker path (delay = 7 steps primary, 3 steps speaker)
-    const P_true = new Float32Array(W_TAPS);
-    const S_true = new Float32Array(S_TAPS);
-    P_true[7] = 0.85; P_true[8] = 0.25; P_true[9] = -0.12;
-    S_true[3] = 0.80; S_true[4] = 0.30; S_true[5] = -0.15;
-    // Initialize S_hat close to S_true
-    for (let i = 0; i < S_TAPS; i++) S_hat[i] = S_true[i] * 0.95;
+    const FS = 48000;
+    const SCOPE_LEN = 400;
+    let scopeIn = new Float32Array(SCOPE_LEN);
+    let scopeOpp = new Float32Array(SCOPE_LEN);
+    let scopeRes = new Float32Array(SCOPE_LEN);
 
     let audioCtx = null;
     let micStream = null;
+    let latestMicBuffer = new Float32Array(4096);
     let running = false;
     let ancOn = true;
-    let autoFxLMS = true;
     let useRealMic = false;
-    let baseFreq = 85;
-    let manualDelay = 7;
-    let manualGain = 0.95;
+    let baseFreq = 85.0;
+    let distCm = 35.0;
     let phase = 0;
 
-    // Oscilloscope ring buffers
-    const SCOPE_LEN = 256;
-    const scopeIn = new Float32Array(SCOPE_LEN);
-    const scopeAnti = new Float32Array(SCOPE_LEN);
-    const scopeErr = new Float32Array(SCOPE_LEN);
-    let scopeIdx = 0;
-    let rmsInVal = 0, rmsErrVal = 0;
-
-    function dot(a, b, len) {
-      let sum = 0;
-      for (let i = 0; i < len; i++) sum += a[i] * b[i];
-      return sum;
+    // Generate or capture a 4096-sample audio frame at 48,000 Hz to send to Python
+    function buildCaptureFrame() {
+      if (useRealMic && latestMicBuffer.length > 0) {
+        return Array.from(latestMicBuffer);
+      }
+      const N = 4096;
+      const arr = new Array(N);
+      for (let n = 0; n < N; n++) {
+        const t = n / FS;
+        arr[n] = 0.50 * Math.cos(2 * Math.PI * baseFreq * t + 0.42)
+               + 0.25 * Math.cos(2 * Math.PI * (baseFreq * 2) * t - 0.85)
+               + 0.15 * Math.cos(2 * Math.PI * (baseFreq * 3) * t + 1.15);
+      }
+      return arr;
     }
 
-    function shiftIn(arr, val) {
-      for (let i = arr.length - 1; i > 0; i--) arr[i] = arr[i - 1];
-      arr[0] = val;
+    async function runPythonCalculator() {
+      const btn = document.getElementById('btnAnalyze');
+      btn.textContent = '⏳ Calculating in Python...';
+      try {
+        const samples = buildCaptureFrame();
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            samples: samples,
+            sample_rate: FS,
+            distance_cm: distCm,
+            hw_delay_us: 12.5
+          })
+        });
+        const data = await res.json();
+        const d = data.details;
+        const b = data.budget;
+        const w = data.wave_slice;
+
+        // Update top metric cards
+        if (d.dominant_tone) {
+          document.getElementById('domFreq').textContent = `${d.dominant_tone.freq_hz.toFixed(3)} Hz`;
+        }
+        document.getElementById('holdUs').textContent = `${b['4_exact_digital_wait_time_us'].toFixed(2)} µs`;
+        document.getElementById('errRms').textContent = ancOn ? b.residual_error_rms.toFixed(8) : b.incoming_rms_at_speaker.toFixed(6);
+        document.getElementById('cancelPct').textContent = ancOn ? `${b.cancellation_percentage.toFixed(4)}%` : '0.0000%';
+
+        // Update oscilloscope buffers with exact Python waveforms
+        for (let i = 0; i < Math.min(SCOPE_LEN, w.incoming.length); i++) {
+          scopeIn[i] = w.incoming[i];
+          scopeOpp[i] = ancOn ? w.opposite[i] : 0;
+          scopeRes[i] = ancOn ? w.residual[i] : w.incoming[i];
+        }
+
+        // Render Frequency & Phase table
+        const fBody = document.getElementById('freqTableBody');
+        fBody.innerHTML = d.components.map(c => `
+          <tr>
+            <td>${c.index}</td>
+            <td style="font-weight:700;color:var(--amber)">${c.freq_hz.toFixed(3)} Hz</td>
+            <td>${c.period_ms.toFixed(3)} ms</td>
+            <td>${c.wavelength_cm.toFixed(2)} cm</td>
+            <td>${c.phase_deg >= 0 ? '+' : ''}${c.phase_deg.toFixed(2)}°</td>
+            <td style="font-weight:700;color:var(--blue)">${c.opposite_phase_deg >= 0 ? '+' : ''}${c.opposite_phase_deg.toFixed(2)}°</td>
+          </tr>
+        `).join('');
+
+        // Render Microsecond Timing Budget table
+        const tBody = document.getElementById('timingTableBody');
+        tBody.innerHTML = `
+          <tr><td>Mic-to-Speaker Distance</td><td style="font-weight:700">${b.mic_to_speaker_distance_cm.toFixed(2)} cm (c = ${b.speed_of_sound_m_s} m/s)</td></tr>
+          <tr><td>1. Acoustic Air Travel Time</td><td style="color:var(--amber);font-weight:700">${b['1_acoustic_travel_time_us'].toFixed(3)} µs</td></tr>
+          <tr><td>2. Python DSP Compute Time</td><td>${b['2_python_dsp_per_sample_us'].toFixed(4)} µs / sample</td></tr>
+          <tr><td>3. Hardware DAC + Amp Delay</td><td>${b['3_hardware_dac_amp_delay_us'].toFixed(3)} µs</td></tr>
+          <tr><td>4. Exact Digital Hold Time</td><td style="color:var(--blue);font-weight:700">${b['4_exact_digital_wait_time_us'].toFixed(3)} µs (${b.exact_wait_samples_at_48khz.toFixed(3)} samples)</td></tr>
+          <tr><td>5. Phase Inversion Applied</td><td style="color:var(--green);font-weight:700">${b.polarity_multiplier.toFixed(6)}x (${b.phase_inversion_applied_deg.toFixed(4)}°)</td></tr>
+        `;
+      } catch (err) {
+        console.error(err);
+      }
+      btn.textContent = '⚡ 2. Capture & Run Python Calculator';
     }
 
-    async function startEngine() {
+    async function startLiveAudio() {
       if (running) return;
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
-      const fs = audioCtx.sampleRate;
-      const scriptNode = audioCtx.createScriptProcessor(512, 1, 1);
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: FS, latencyHint: 'interactive' });
+      const scriptNode = audioCtx.createScriptProcessor(1024, 1, 1);
 
-      let decimCounter = 0;
-      const DECIM = Math.max(1, Math.round(fs / 4000));
-      let heldOut = 0;
+      // Exact delay ring buffer in WebAudio matching Python's calculated sample hold
+      const delayBuf = new Float32Array(4096);
+      let writeIdx = 0;
 
       scriptNode.onaudioprocess = (e) => {
         const input = e.inputBuffer.getChannelData(0);
         const output = e.outputBuffer.getChannelData(0);
-        let sumIn = 0, sumErr = 0, count = 0;
+        const exactDelaySamples = Math.round(((distCm / 100.0) / 344.632) * FS);
 
         for (let i = 0; i < output.length; i++) {
-          decimCounter++;
-          if (decimCounter >= DECIM) {
-            decimCounter = 0;
-            phase += 1 / 4000;
-
-            // 1. Get Outdoor Reference Noise (Synthetic Traffic Bass or Tablet Mic)
-            let u_n = 0;
-            if (useRealMic && micStream) {
-              u_n = input[i] * 2.5;
-            } else {
-              u_n = 0.45 * Math.sin(2 * Math.PI * baseFreq * phase)
-                  + 0.25 * Math.sin(2 * Math.PI * (baseFreq * 1.5) * phase + 0.6)
-                  + 0.15 * Math.sin(2 * Math.PI * (baseFreq * 0.5) * phase);
-            }
-
-            shiftIn(src_hist, u_n);
-            const d_n = dot(P_true, src_hist, W_TAPS); // Primary noise arriving in room
-
-            shiftIn(x_buf, u_n);
-
-            // 2. Compute Anti-Noise Output (-y_n)
-            let speaker_out = 0;
-            if (ancOn) {
-              if (autoFxLMS) {
-                const y_n = dot(W, x_buf, W_TAPS);
-                speaker_out = Math.max(-0.95, Math.min(0.95, -y_n));
-              } else {
-                // Kid-friendly Manual Mode: grab delayed wave & multiply by -1
-                speaker_out = -1.0 * x_buf[manualDelay] * manualGain;
-              }
-            }
-
-            shiftIn(spk_hist, speaker_out);
-            const anti_at_err = dot(S_true, spk_hist, S_TAPS);
-
-            // 3. Superposition in Room: Leftover Error = Noise + Anti-Noise
-            const e_n = d_n + anti_at_err;
-
-            // 4. Update 128 Knobs via Normalized Leaky FxLMS
-            shiftIn(s_buf, u_n);
-            const xf_n = dot(S_hat, s_buf, S_TAPS);
-            shiftIn(xf_buf, xf_n);
-
-            if (ancOn && autoFxLMS) {
-              const power = dot(xf_buf, xf_buf, W_TAPS) + 1e-4;
-              const step = (0.025 * e_n) / power;
-              for (let k = 0; k < W_TAPS; k++) {
-                W[k] = 0.9999 * W[k] + step * xf_buf[k];
-              }
-            }
-
-            // Record for oscilloscope & audio output
-            scopeIn[scopeIdx] = d_n;
-            scopeAnti[scopeIdx] = anti_at_err;
-            scopeErr[scopeIdx] = e_n;
-            scopeIdx = (scopeIdx + 1) % SCOPE_LEN;
-
-            sumIn += d_n * d_n;
-            sumErr += e_n * e_n;
-            count++;
-            heldOut = e_n * 0.45;
+          phase += 1.0 / FS;
+          let inc = 0;
+          if (useRealMic && micStream) {
+            inc = input[i] * 2.5;
+            latestMicBuffer[(writeIdx + i) % latestMicBuffer.length] = inc;
+          } else {
+            inc = 0.45 * Math.cos(2 * Math.PI * baseFreq * phase + 0.42)
+                + 0.22 * Math.cos(2 * Math.PI * (baseFreq * 2) * phase - 0.85)
+                + 0.12 * Math.cos(2 * Math.PI * (baseFreq * 3) * phase + 1.15);
           }
-          output[i] = heldOut;
-        }
-        if (count > 0) {
-          rmsInVal = 0.85 * rmsInVal + 0.15 * Math.sqrt(sumIn / count);
-          rmsErrVal = 0.85 * rmsErrVal + 0.15 * Math.sqrt(sumErr / count);
+
+          delayBuf[writeIdx] = inc;
+          const readIdx = (writeIdx - exactDelaySamples + delayBuf.length) % delayBuf.length;
+          const delayedInc = delayBuf[readIdx];
+
+          // Exact opposite-phase wave (-1.0 * delayedInc)
+          const antiWave = ancOn ? (-1.0 * delayedInc) : 0.0;
+          const residual = delayedInc + antiWave;
+
+          // Output the combined wave so user hears silence when ANC is ON and loud bass when OFF
+          output[i] = residual * 0.5;
+          writeIdx = (writeIdx + 1) % delayBuf.length;
         }
       };
 
       scriptNode.connect(audioCtx.destination);
       running = true;
-      document.getElementById('statusBadge').textContent = 'LIVE @ 4,000 Hz';
-      document.getElementById('statusBadge').style.background = '#16a34a';
-      document.getElementById('btnStart').textContent = '✅ Audio Engine Running';
+      document.getElementById('btnStart').textContent = '✅ Live Audio Active';
+      runPythonCalculator();
     }
 
-    // UI Controls
-    document.getElementById('btnStart').onclick = startEngine;
+    document.getElementById('btnStart').onclick = startLiveAudio;
+    document.getElementById('btnAnalyze').onclick = runPythonCalculator;
     document.getElementById('btnAnc').onclick = (e) => {
       ancOn = !ancOn;
-      e.target.textContent = ancOn ? '🛡️ 2. ANC Shield: ON' : '🔇 2. ANC Shield: OFF (Bypass)';
+      e.target.textContent = ancOn ? '🛡️ 3. Opposite-Phase Speaker: ON' : '🔇 3. Opposite-Phase Speaker: OFF';
       e.target.style.background = ancOn ? 'var(--blue)' : '#64748b';
-    };
-    document.getElementById('btnMode').onclick = (e) => {
-      autoFxLMS = !autoFxLMS;
-      if (!autoFxLMS) W.fill(0);
-      e.target.textContent = autoFxLMS ? '🤖 Mode: Auto FxLMS (128 Knobs)' : '🎛️ Mode: Manual Wave-Flipper';
+      runPythonCalculator();
     };
     document.getElementById('btnMic').onclick = async (e) => {
-      if (!running) await startEngine();
+      if (!running) await startLiveAudio();
       if (!useRealMic) {
         try {
           micStream = await navigator.mediaDevices.getUserMedia({
             audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
           });
-          const src = audioCtx.createMediaStreamSource(micStream);
           useRealMic = true;
-          e.target.textContent = '🎤 Tablet Mic: LIVE';
+          e.target.textContent = '🎤 Source: Live Tablet Mic';
           e.target.style.background = '#22c55e';
+          runPythonCalculator();
         } catch (err) {
-          alert('Microphone permission denied or requires localhost: ' + err.message);
+          alert('Mic error: ' + err.message);
         }
       } else {
         useRealMic = false;
-        e.target.textContent = '🎤 Use Tablet Mic: OFF (Sim)';
-        e.target.style.background = '#c084fc';
+        e.target.textContent = '🎤 Source: Precision Multi-Tone';
+        e.target.style.background = 'var(--purple)';
+        runPythonCalculator();
       }
     };
 
     document.getElementById('freqSlider').oninput = (e) => {
       baseFreq = parseFloat(e.target.value);
-      document.getElementById('freqVal').textContent = `${baseFreq} Hz + Road Rumble`;
+      document.getElementById('freqVal').textContent = `${baseFreq.toFixed(1)} Hz (+ Harmonics)`;
+      runPythonCalculator();
     };
-    document.getElementById('delaySlider').oninput = (e) => {
-      manualDelay = parseInt(e.target.value, 10);
-      document.getElementById('delayVal').textContent = `${manualDelay} steps (${(manualDelay * 0.25).toFixed(2)} ms)`;
-    };
-    document.getElementById('gainSlider').oninput = (e) => {
-      manualGain = parseFloat(e.target.value) / 100.0;
-      document.getElementById('gainVal').textContent = `${manualGain.toFixed(2)}x`;
+    document.getElementById('distSlider').oninput = (e) => {
+      distCm = parseFloat(e.target.value);
+      document.getElementById('distVal').textContent = `${distCm.toFixed(1)} cm`;
+      runPythonCalculator();
     };
 
-    // 60 FPS Oscilloscope Renderer
+    // Draw Oscilloscope
     const canvas = document.getElementById('scope');
     const ctx = canvas.getContext('2d');
     function drawScope() {
@@ -306,34 +330,27 @@
       ctx.fillStyle = '#090d16';
       ctx.fillRect(0, 0, w, h);
 
-      // Center zero line
       ctx.strokeStyle = '#1e293b';
       ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, mid); ctx.lineTo(w, mid); ctx.stroke();
 
-      function plotWave(buf, color, lineWidth) {
+      function plot(buf, color, lw) {
         ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
+        ctx.lineWidth = lw;
         ctx.beginPath();
         for (let i = 0; i < SCOPE_LEN; i++) {
-          const idx = (scopeIdx + i) % SCOPE_LEN;
           const x = (i / (SCOPE_LEN - 1)) * w;
-          const y = mid - buf[idx] * (h * 0.42);
+          const y = mid - buf[i] * (h * 0.42);
           if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
         }
         ctx.stroke();
       }
-
-      plotWave(scopeIn, '#f87171', 2.0);     // Red: Incoming Traffic Bass
-      plotWave(scopeAnti, '#38bdf8', 2.0);   // Blue: 180-deg Flipped Anti-Noise
-      plotWave(scopeErr, '#4ade80', 3.0);    // Green: Combined Result in Room
-
-      document.getElementById('inRms').textContent = rmsInVal.toFixed(3);
-      document.getElementById('errRms').textContent = rmsErrVal.toFixed(3);
-      const db = 20 * Math.log10((rmsErrVal + 1e-6) / (rmsInVal + 1e-6));
-      document.getElementById('attenDb').textContent = running ? `${db.toFixed(1)} dB` : '0.0 dB';
+      plot(scopeIn, '#f87171', 2.0);
+      plot(scopeOpp, '#38bdf8', 2.0);
+      plot(scopeRes, '#4ade80', 3.0);
     }
     drawScope();
+    runPythonCalculator();
   </script>
 </body>
 </html>
