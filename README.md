@@ -21,6 +21,8 @@ An experimental hardware, firmware and Python simulation project for reducing lo
 
 The three simulator rows are the values the current code prints with its fixed random seeds. They describe the models, not a real window.
 
+**ADC resolution.** The Teensy 4.0 reads 12-bit codes, but PJRC states that only about 10 bits are normally usable because of noise. The HIL model's default ADC noise (12-bit quantisation plus 1.2 LSB rms) is an ENOB of 9.90 bits. Sweeping it with `--adc-enob` leaves every figure above unchanged at 0.1 dB resolution from 12 bits down to 8 bits (S_hat NMSE −20.2 dB throughout). At 6 bits the listener figure moves by 0.1 dB, and at 4 bits ANC alone at the listener is −7.4 dB instead of −7.8 dB. So in this model, ADC noise is not what limits cancellation. This holds only at the model's signal level: the street recording is scaled to a 0.85 peak, close to full scale. A real microphone preamp set to a lower level would lose more of its bits to noise, and that has not been simulated.
+
 Take-aways from `python3 simulator/mismatch_sweep.py`:
 
 * Gain error alone limits a tone's cancellation to 20·log10(error): a 5 % error gives −26.0 dB, 10 % gives −20.0 dB, 20 % gives −14.0 dB.
@@ -61,7 +63,7 @@ Sound-blocker/
 ├── tools/
 │   ├── timing_model.py                 # Delay-budget arithmetic (shared)
 │   └── timing_tool.py                  # Budget, measure ISR time over USB serial, change settings
-├── tests/                              # test_feedback_alignment.py, test_timing_tool.py
+├── tests/                              # test_feedback_alignment.py, test_timing_tool.py, test_adc_model.py
 ├── tablet_app/index.html               # Tone/phase/timing lab (simulated speaker plane only)
 └── HARDWARE_AND_BAFFLE_GUIDE.md        # Wiring, filter design, delay budget, baffle
 ```
@@ -75,7 +77,7 @@ python3 tools/timing_tool.py budget --preset butterworth-1k     # offline delay 
 python3 tools/timing_tool.py measure --port /dev/cu.usbmodemXXXX # real ISR time from the Teensy
 python3 tools/timing_tool.py set --port /dev/cu.usbmodemXXXX mu 0.012   # also: anc on|off, leak, calibrate
 python3 -m unittest discover -s tests -p "test_*.py"   # firmware-index and timing-tool tests
-python3 simulator/simulate_realistic_hil.py   # most detailed model (about a minute)
+python3 simulator/simulate_realistic_hil.py   # most detailed model (a few minutes); --adc-enob N, --no-output
 python3 precision_anc/precision_phase_canceller.py [file.wav]
 python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
 # Tablet on the same Wi-Fi: add --host 0.0.0.0 (no authentication; trusted networks only)

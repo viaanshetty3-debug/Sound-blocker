@@ -25,10 +25,12 @@ Contents:
 3. Real Mixed-Signal Electronics (12:1 Multi-Rate 48 kHz <-> 4 kHz):
    - Minimum-phase 2-pole analog RC anti-aliasing & reconstruction filters
      (fc = 480 Hz) introducing 0.469 ms of low-frequency group delay each way (sqrt(2)/(2*pi*fc)).
-   - 12-bit SAR ADC quantization (4,096 levels + 1.2 LSB thermal jitter).
+   - 12-bit SAR ADC quantization (4,096 levels) + 1.2 LSB rms input noise = ENOB 9.90 bits
+     (PJRC: about 10 bits normally usable). Sweep it with --adc-enob.
    - 12-bit MCP4921 SPI DAC quantization + Zero-Order Hold (ZOH) staircase.
 """
 
+import argparse
 import os
 import wave
 import numpy as np
@@ -53,6 +55,13 @@ MU_S_IDENT = 0.08
 MU_FXLMS = 0.012
 LEAKAGE = 0.99992
 EPSILON = 1e-4
+
+# ADC noise model. The firmware reads 12-bit codes (analogReadResolution(12)), but PJRC's
+# Teensy 4.0 page says only about 10 bits are normally usable because of noise. The model
+# keeps the 12-bit quantizer and adds Gaussian input noise of ADC_NOISE_LSB (in 12-bit LSB).
+# The default 1.2 LSB plus quantization gives an ENOB of 9.90 bits (see adc_enob()).
+ADC_BITS = 12
+ADC_NOISE_LSB = 1.2
 
 
 # ============================================================================
@@ -176,9 +185,25 @@ def build_baffle_and_flanking_filters():
     return ir_baffle, ir_glass
 
 
-def quantize_12bit_adc(voltage_norm, rng):
-    """Simulate Teensy 4.0 12-bit SAR ADC (0..4095) with 1.2 LSB thermal jitter."""
-    noisy = voltage_norm + rng.normal(0.0, 1.2 / 2048.0, size=np.shape(voltage_norm))
+def adc_enob(noise_lsb, bits=ADC_BITS):
+    """Effective number of bits of the ADC model for a full-scale sine.
+
+    Total noise = quantization (LSB^2 / 12) + Gaussian input noise (noise_lsb LSB rms);
+    ENOB = bits - log2(total_rms / (LSB / sqrt(12))), the same as (SINAD - 1.76 dB) / 6.02 dB.
+    """
+    return bits - 0.5 * np.log2(1.0 + 12.0 * noise_lsb ** 2)
+
+
+def adc_noise_lsb_for_enob(enob, bits=ADC_BITS):
+    """Input noise (rms, in LSB) that makes adc_enob() equal to enob. Inverse of adc_enob()."""
+    if enob > bits:
+        raise ValueError(f"ENOB {enob} cannot exceed the {bits}-bit quantizer")
+    return float(np.sqrt((4.0 ** (bits - enob) - 1.0) / 12.0))
+
+
+def quantize_12bit_adc(voltage_norm, rng, noise_lsb=ADC_NOISE_LSB):
+    """Simulate Teensy 4.0 12-bit SAR ADC (0..4095) with noise_lsb LSB rms input noise."""
+    noisy = voltage_norm + rng.normal(0.0, noise_lsb / 2048.0, size=np.shape(voltage_norm))
     clipped = np.clip(noisy, -1.0, 0.9995)
     adc_code = np.round((clipped + 1.0) * 2048.0)
     return (adc_code - 2048.0) / 2048.0
@@ -195,7 +220,8 @@ def quantize_12bit_dac(sample_norm):
 # ============================================================================
 # 4. MAIN HARDWARE-IN-THE-LOOP (HIL) SIMULATION
 # ============================================================================
-def run_realistic_hil():
+def run_realistic_hil(adc_noise_lsb=ADC_NOISE_LSB, write_outputs=True):
+    """Run the model. Returns the printed figures as a dict (dB values, rounded to 0.1 dB)."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     yt_wav = os.path.join(base_dir, "input_youtube.wav")
     out_dir = os.path.join(base_dir, "output_realistic")
@@ -204,6 +230,7 @@ def run_realistic_hil():
     print("=" * 78)
     print(" HYPER-REALISTIC 3D ROOM & HARDWARE-IN-THE-LOOP (HIL) ANC SIMULATOR")
     print(" Physics Rate: 48,000 Hz | Teensy 4.0 ISR: 4,000 Hz (12-Bit ADC/DAC)")
+    print(f" ADC model: 12-bit codes + {adc_noise_lsb:.3f} LSB rms noise -> ENOB {adc_enob(adc_noise_lsb):.2f} bits")
     print("=" * 78)
 
     # 1. Load 18 seconds of native 48,000 Hz YouTube audio
@@ -328,8 +355,8 @@ def run_realistic_hil():
         e_raw = np.dot(S_true_4k, y_hist_true) + rng.normal(0.0, 0.0015)
         x_raw = np.dot(F_true_4k, y_hist_true) + rng.normal(0.0, 0.0020)
 
-        adc_err = float(quantize_12bit_adc(e_raw, rng))
-        adc_ref = float(quantize_12bit_adc(x_raw, rng))
+        adc_err = float(quantize_12bit_adc(e_raw, rng, adc_noise_lsb))
+        adc_ref = float(quantize_12bit_adc(x_raw, rng, adc_noise_lsb))
 
         # 2. 25 Hz DC-blocking High-Pass Filter (exact match to window_anc_fxlms.ino)
         x_n = HPF_ALPHA * (c_ref_out + adc_ref - c_ref_in)
@@ -414,8 +441,8 @@ def run_realistic_hil():
         raw_err_v = d_err_4k[n] + anti_at_err
 
         # 2. 12-bit SAR ADC quantization + thermal jitter
-        adc_ref = float(quantize_12bit_adc(raw_ref_v, rng))
-        adc_err = float(quantize_12bit_adc(raw_err_v, rng))
+        adc_ref = float(quantize_12bit_adc(raw_ref_v, rng, adc_noise_lsb))
+        adc_err = float(quantize_12bit_adc(raw_err_v, rng, adc_noise_lsb))
 
         # 3. 25 Hz DC-blocking High-Pass Filter
         x_n = HPF_ALPHA * (ref_prev_out + adc_ref - ref_prev_in)
@@ -507,10 +534,14 @@ def run_realistic_hil():
     print("=" * 78)
     print(f"{'Frequency Band':<48} | {'Baffle Only':<12} | {'Baffle + ANC'}")
     print("-" * 78)
+    results = {"adc_noise_lsb": adc_noise_lsb, "adc_enob": round(float(adc_enob(adc_noise_lsb)), 2),
+               "s_hat_nmse_db": round(float(nmse_s), 1), "bands": {}}
     for name, flo, fhi in bands:
         r_bare = band_rms(earL_bare, flo, fhi)
         r_baff = band_rms(earL_baffle, flo, fhi)
         r_hyb = band_rms(earL_hybrid, flo, fhi)
+        results["bands"][f"{flo:g}-{fhi:g}"] = (round(float(db_diff(r_baff, r_bare)), 1),
+                                                 round(float(db_diff(r_hyb, r_bare)), 1))
         print(f"{name:<48} | {db_diff(r_baff, r_bare):>8.1f} dB  | {db_diff(r_hyb, r_bare):>8.1f} dB")
 
     # Compare 70-220 Hz Core Bass at Error Mic (0.25m) vs Listener Ear (2.0m)
@@ -529,6 +560,11 @@ def run_realistic_hil():
     print(f"  - At Listener's Ears  (2.00m inside room) : {db_diff(ear_bass_on, ear_bass_off):>6.1f} dB")
     print(f"Overall Full-Band Traffic Reduction at Listener (2.0m): {db_diff(total_hyb, total_bare):>6.1f} dB")
     print("=" * 78)
+    results["anc_err_mic_db"] = round(float(db_diff(err_bass_on, err_bass_off)), 1)
+    results["anc_ear_db"] = round(float(db_diff(ear_bass_on, ear_bass_off)), 1)
+    results["full_band_db"] = round(float(db_diff(total_hyb, total_bare)), 1)
+    if not write_outputs:
+        return results
 
     # ------------------------------------------------------------------------
     # 8. SAVE 48 kHz BINAURAL STEREO WAV FILES (Normalized to Common Peak)
@@ -614,7 +650,18 @@ def run_realistic_hil():
     print(f"    - {p2}")
     print(f"    - {p3}")
     print(f"    - {plot_path}")
+    return results
 
 
 if __name__ == "__main__":
-    run_realistic_hil()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    noise = parser.add_mutually_exclusive_group()
+    noise.add_argument("--adc-noise-lsb", type=float, default=ADC_NOISE_LSB,
+                       help=f"ADC input noise, rms, in 12-bit LSB (default {ADC_NOISE_LSB})")
+    noise.add_argument("--adc-enob", type=float,
+                       help="set the ADC noise so the model's ENOB equals this many bits")
+    parser.add_argument("--no-output", action="store_true",
+                        help="print the figures only; do not rewrite the WAV files and plot")
+    args = parser.parse_args()
+    lsb = args.adc_noise_lsb if args.adc_enob is None else adc_noise_lsb_for_enob(args.adc_enob)
+    run_realistic_hil(adc_noise_lsb=lsb, write_outputs=not args.no_output)
