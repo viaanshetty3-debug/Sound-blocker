@@ -6,6 +6,10 @@ Python does NOT run the control loop (an OS-scheduled process has milliseconds o
 budget is about 1 ms). The Teensy's timer ISR does that. This tool does the parts a PC is good at:
 
   budget    Offline delay budget from geometry + filter choice (no hardware needed).
+  --port virtual  runs the real firmware on this computer (tools/virtual_teensy.py): every
+            command works, but its ISR time is ASSUMED, so `measure` never passes on it.
+  --port auto     uses the only Teensy plugged in (/dev/cu.usbmodem* or /dev/ttyACM*).
+
   measure   Ask the firmware how long its ISR really takes and how steady the 250 us tick is,
             then plug the measured worst case into the same budget and print a verdict.
   params    Show the firmware's current settings.
@@ -13,6 +17,7 @@ budget is about 1 ms). The Teensy's timer ISR does that. This tool does the part
   calibrate Start the 3 s secondary-path calibration.
 
 Examples
+  python3 tools/timing_tool.py measure --port virtual
   python3 tools/timing_tool.py budget --preset original-rc
   python3 tools/timing_tool.py budget --preset butterworth-1k --isr-us 12
   python3 tools/timing_tool.py measure --port /dev/cu.usbmodem1234 --preset butterworth-1k
@@ -27,13 +32,14 @@ Exit status of `budget` and `measure`:
   2  margin is negative (already true with the missing terms at zero), or the ISR overran
   3  undetermined: terms are still missing and the bound does not rule the design out
 
-Needs `pip install pyserial` for the serial commands (not for `budget`).
+Needs `pip install pyserial` for a real serial port (not for `budget` or `--port virtual`).
 
 What `measure` does NOT know: the delay of your analog filters, DAC settling, amplifier and
 speaker, and the real acoustic path. Enter those with --preset / --in-filter-ms /
 --out-filter-ms / --dac-settle-us / --amp-us / --extra-ms (oscilloscope, datasheet).
 """
 import argparse
+import glob
 import json
 import os
 import sys
@@ -68,6 +74,7 @@ class Link:
 
     def __init__(self, dev):
         self.dev = dev
+        self.virtual = None                  # the "@VIRTUAL" fields, once the device sends them
 
     def send(self, text):
         self.dev.write((text.strip() + "\n").encode("ascii"))
@@ -85,17 +92,42 @@ class Link:
             if not line.startswith("@"):
                 continue                                  # human-readable telemetry: skip
             tag, kv = parse_kv(line)
+            if tag == "VIRTUAL":
+                if self.virtual is None:
+                    print(VIRTUAL_BANNER)
+                self.virtual = kv
+                continue
             replies.append((tag, kv, line))
             if tag in until:
                 return replies
         raise TimeoutError(f"no reply to {text!r} within {timeout_s} s (is the firmware running?)")
 
 
-def open_serial(port, baud=115200, timeout=0.2):
+VIRTUAL_BANNER = ("*** VIRTUAL TEENSY: the real firmware running on this computer with a toy plant. "
+                  "Its timing is ASSUMED, not measured. ***")
+
+
+def find_teensy_ports():
+    return sorted(glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/ttyACM*"))
+
+
+def open_serial(port, baud=115200, timeout=0.2, virtual_isr_us=250.0):
+    if port == "virtual":
+        import virtual_teensy
+        return Link(virtual_teensy.VirtualDevice(virtual_isr_us, timeout))
+    if port == "auto":
+        found = find_teensy_ports()
+        if len(found) != 1:
+            sys.exit(f"--port auto needs exactly one Teensy plugged in; found {len(found) or 'none'}"
+                     + (": " + ", ".join(found) if found else
+                        " (plug it in, or use --port virtual to try the firmware without a board)"))
+        port = found[0]
+        print(f"using {port}")
     try:
         import serial  # pyserial
     except ImportError:
-        sys.exit("pyserial is required for serial commands: pip install pyserial")
+        sys.exit("pyserial is required for a real serial port: python3 -m pip install --user pyserial "
+                 "(or use --port virtual)")
     return Link(serial.Serial(port, baud, timeout=timeout))
 
 
@@ -162,7 +194,7 @@ def pick_state(timings):
 
 
 def cmd_measure(args, link=None):
-    link = link or open_serial(args.port, args.baud)
+    link = link or open_serial(args.port, args.baud, virtual_isr_us=args.virtual_isr_us)
     link.transact("?timing")                               # discard stats gathered so far
     print(f"collecting ISR timing for {args.seconds:.1f} s ...")
     time.sleep(args.seconds)
@@ -186,15 +218,20 @@ def cmd_measure(args, link=None):
 
     # exec_max covers the whole control step. The DAC is written before the weight update, so the
     # true sample->DAC time is at most this: the figure is an upper bound on that delay.
-    b, in_f, out_f, desc = make_budget(args, exec_max * 1e-6, isr_status="measured, worst case")
+    status, title = "measured, worst case", "DELAY BUDGET with measured ISR time"
+    if link.virtual is not None:
+        print(f"  {VIRTUAL_BANNER}\n  The ISR time above is the assumed {link.virtual.get('isr_us_assumed')} us "
+              "(--virtual-isr-us), not a measurement.")
+        status, title = "ASSUMED (virtual Teensy)", "DELAY BUDGET with ASSUMED ISR time (virtual Teensy)"
+    b, in_f, out_f, desc = make_budget(args, exec_max * 1e-6, isr_status=status)
     print(f"\nfilters: {desc}")
-    print(tm.format_budget(b, "DELAY BUDGET with measured ISR time"))
+    print(tm.format_budget(b, title))
     print_filter_report(in_f, out_f, args.fs)
     return exit_code(b, overran)
 
 
 def cmd_params(args, link=None):
-    link = link or open_serial(args.port, args.baud)
+    link = link or open_serial(args.port, args.baud, virtual_isr_us=args.virtual_isr_us)
     for tag, kv, line in link.transact("?params"):
         if tag == "PARAMS":
             print(line[1:])
@@ -217,14 +254,14 @@ def cmd_set(args, link=None):
         text = f"set leak {float(value):.6f}"
     else:
         sys.exit("unknown setting")
-    link = link or open_serial(args.port, args.baud)
+    link = link or open_serial(args.port, args.baud, virtual_isr_us=args.virtual_isr_us)
     tag, _, line = link.transact(text)[-1]
     print(line[1:])
     return 0 if tag == "OK" else 2
 
 
 def cmd_calibrate(args, link=None):
-    link = link or open_serial(args.port, args.baud)
+    link = link or open_serial(args.port, args.baud, virtual_isr_us=args.virtual_isr_us)
     tag, _, line = link.transact("calibrate")[-1]
     print(line[1:])
     return 0 if tag == "OK" else 2
@@ -235,7 +272,8 @@ def build_parser():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def geometry(p):
-        p.add_argument("--preset", choices=sorted(tm.PRESETS), default="butterworth-1k")
+        p.add_argument("--preset", choices=sorted(tm.PRESETS), default="sk-11k-20n-10n",
+                       help="analog filters (default sk-11k-20n-10n, the parts in the hardware guide)")
         p.add_argument("--in-filter-ms", type=float, help="measured input filter delay (overrides preset)")
         p.add_argument("--out-filter-ms", type=float, help="measured output filter delay (overrides preset)")
         p.add_argument("--dac-settle-us", type=float, help="DAC output settling time (datasheet); unknown if omitted")
@@ -249,8 +287,11 @@ def build_parser():
         p.add_argument("--fs", type=float, default=4000.0, help="controller sample rate in Hz")
 
     def port(p):
-        p.add_argument("--port", required=True)
+        p.add_argument("--port", required=True,
+                       help="serial port, 'auto' (the only Teensy plugged in) or 'virtual' (no board)")
         p.add_argument("--baud", type=int, default=115200)
+        p.add_argument("--virtual-isr-us", type=float, default=250.0,
+                       help="--port virtual only: ASSUMED ISR time it reports (default 250 = the limit)")
 
     b = sub.add_parser("budget", help="offline delay budget")
     geometry(b)

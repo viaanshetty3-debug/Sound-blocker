@@ -181,6 +181,10 @@ def compute_budget(ref_to_spk_m=0.35, spk_to_err_m=0.25, ref_to_err_m=None,
 
     known = sum(v for _, v, _ in terms if v is not None)
     missing = [n for n, v, _ in terms if v is None]
+    # A status starting with "ASSUMED" (e.g. the virtual Teensy's ISR time) is a value nobody
+    # measured: it is shown and added up, but it can never make the verdict a pass.
+    assumed = [n for n, v, st in terms if v is not None and st.startswith("ASSUMED")]
+    definite = known - sum(v for n, v, _ in terms if n in assumed)
     complete = not missing
     upper_margin = head - known
     out = {
@@ -191,10 +195,11 @@ def compute_budget(ref_to_spk_m=0.35, spk_to_err_m=0.25, ref_to_err_m=None,
         "margin_upper_bound_s": upper_margin,
         "d_min_m": c * known if complete else None,
         "d_min_lower_bound_m": c * known,
+        "assumed": assumed,
     }
-    if upper_margin < 0:
+    if head - definite < 0:
         out["causal"] = False            # unknown terms can only add delay, so this is definite
-    elif complete:
+    elif complete and not assumed:
         out["causal"] = True
     else:
         out["causal"] = None             # undetermined until the missing terms are supplied
@@ -247,7 +252,13 @@ def format_budget(b, title="DELAY BUDGET"):
         val = "      --      " if v is None else f"{v * 1e6:10.1f} us"
         lines.append(f"    {name:<46} {val}   [{status}]")
     lines.append(f"  total of the terms that are known     : {b['known_total_s'] * 1e6:10.1f} us")
-    if b["complete"]:
+    assumed = b.get("assumed", [])
+    if assumed:
+        lines.append(f"  ASSUMED, not measured: {', '.join(assumed)}")
+    if b["complete"] and assumed:
+        lines.append(f"  margin M = H - T  (if assumed true)   : {b['margin_s'] * 1e6:+10.1f} us")
+        lines.append(f"  break-even d_min = c T (if assumed)   : {b['d_min_m'] * 100:10.2f} cm")
+    elif b["complete"]:
         lines.append(f"  margin M = H - T                      : {b['margin_s'] * 1e6:+10.1f} us")
         lines.append(f"  break-even distance d_min = c T       : {b['d_min_m'] * 100:10.2f} cm")
     else:
@@ -259,6 +270,8 @@ def format_budget(b, title="DELAY BUDGET"):
     elif b["causal"] is False:
         short = -b["margin_upper_bound_s"]
         lines.append(f"  verdict: the controller must predict the noise at least {short * 1e6:.1f} us ahead")
+    elif assumed:
+        lines.append("  verdict: undetermined: the result rests on ASSUMED values; measure them on real hardware")
     else:
         lines.append("  verdict: undetermined until the missing terms are supplied")
     return "\n".join(lines)

@@ -451,7 +451,7 @@ void handleButton() {
 
 // ----------------------------------------------------------------------------
 // Serial interface.
-//  * Single keys (old behaviour): 't' toggle ANC/bypass, 'c' recalibrate.
+//  * Single keys: 't' toggle ANC/bypass, 'c' recalibrate (alone on a line, or with no line ending).
 //  * Line commands for tools/timing_tool.py. Replies start with '@' so they cannot be
 //    confused with the human-readable telemetry:
 //      ?timing          ISR timing report since the last report (then resets the counters)
@@ -535,28 +535,42 @@ void handleLine(char* line) {
   }
 }
 
+// Single-key shortcuts 't' (toggle ANC/bypass) and 'c' (recalibrate). Returns false if the
+// line is not one of them.
+bool handleShortcut(const char* line) {
+  if (line[1] != 0) return false;
+  if (line[0] == 't' || line[0] == 'T') {
+    if (sysState == STATE_ANC_ACTIVE) {
+      sysState = STATE_ANC_BYPASS;
+      Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
+    } else if (sysState == STATE_ANC_BYPASS) {
+      sysState = STATE_ANC_ACTIVE;
+      Serial.println(F("[ANC] Mode -> ACTIVE"));
+    }
+    return true;
+  }
+  if (line[0] == 'c' || line[0] == 'C') {
+    startCalibration();
+    return true;
+  }
+  return false;
+}
+
+// A shortcut counts only as a whole line, or as a lone key followed by 50 ms of silence (serial
+// monitors set to "No line ending"). The old version acted on the first character of every
+// line, so the "calibrate" command started a calibration through 'c' and then answered
+// "@ERR unknown command" for the rest ("alibrate").
 void handleSerial() {
   static char buf[48];
   static uint8_t len = 0;
+  static uint32_t lastByteMs = 0;
   while (Serial.available() > 0) {
     char c = (char)Serial.read();
-    if (len == 0 && (c == 't' || c == 'T' || c == 'c' || c == 'C')) {
-      // Single-key shortcuts (work with or without a trailing newline in the serial monitor)
-      if (c == 't' || c == 'T') {
-        if (sysState == STATE_ANC_ACTIVE) {
-          sysState = STATE_ANC_BYPASS;
-          Serial.println(F("[ANC] Mode -> BYPASS (Speaker Muted)"));
-        } else if (sysState == STATE_ANC_BYPASS) {
-          sysState = STATE_ANC_ACTIVE;
-          Serial.println(F("[ANC] Mode -> ACTIVE"));
-        }
-      } else {
-        startCalibration();
-      }
-    } else if (c == '\n' || c == '\r') {
+    lastByteMs = millis();
+    if (c == '\n' || c == '\r') {
       if (len > 0) {
         buf[len] = 0;
-        handleLine(buf);
+        if (!handleShortcut(buf)) handleLine(buf);
         len = 0;
       }
     } else if (len < sizeof(buf) - 1) {
@@ -564,6 +578,10 @@ void handleSerial() {
     } else {
       len = 0;                           // overlong line: drop it
     }
+  }
+  if (len == 1 && (millis() - lastByteMs) > 50) {
+    buf[1] = 0;
+    if (handleShortcut(buf)) len = 0;
   }
 }
 

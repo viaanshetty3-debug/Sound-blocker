@@ -62,8 +62,10 @@ Sound-blocker/
 │   └── input_youtube.wav               # Third-party recording; confirm you may use/redistribute it
 ├── tools/
 │   ├── timing_model.py                 # Delay-budget arithmetic (shared)
-│   └── timing_tool.py                  # Budget, measure ISR time over USB serial, change settings
-├── tests/                              # test_feedback_alignment.py, test_timing_tool.py, test_adc_model.py
+│   ├── timing_tool.py                  # Budget, measure ISR time over USB serial, change settings
+│   ├── virtual_teensy.py               # Runs the real firmware on your computer (no board needed)
+│   └── virtual_teensy/                 # Host stubs of the Teensy core + harness with a toy plant
+├── tests/                              # firmware indexing, timing tool, ADC model, virtual Teensy
 ├── tablet_app/index.html               # Tone/phase/timing lab (simulated speaker plane only)
 └── HARDWARE_AND_BAFFLE_GUIDE.md        # Wiring, filter design, delay budget, baffle
 ```
@@ -73,20 +75,27 @@ Sound-blocker/
 ```bash
 pip install -r requirements.txt          # also needs ffmpeg for simulate_youtube_traffic.py
 python3 simulator/mismatch_sweep.py      # what limits cancellation (fast, no audio)
-python3 tools/timing_tool.py budget --preset butterworth-1k     # offline delay budget
-python3 tools/timing_tool.py measure --port /dev/cu.usbmodemXXXX # real ISR time from the Teensy
-python3 tools/timing_tool.py set --port /dev/cu.usbmodemXXXX mu 0.012   # also: anc on|off, leak, calibrate
-python3 -m unittest discover -s tests -p "test_*.py"   # firmware-index and timing-tool tests
+python3 tools/timing_tool.py budget                            # offline delay budget (guide's filters)
+python3 tools/timing_tool.py measure --port virtual            # no board: real firmware, ASSUMED timing
+python3 tools/timing_tool.py measure --port auto               # real ISR time from the plugged-in Teensy
+python3 tools/timing_tool.py set --port auto mu 0.012          # also: anc on|off, leak, calibrate
+python3 -m unittest discover -s tests -p "test_*.py"   # all tests (the virtual-Teensy ones need a C++ compiler)
 python3 simulator/simulate_realistic_hil.py   # most detailed model (a few minutes); --adc-enob N, --no-output
 python3 precision_anc/precision_phase_canceller.py [file.wav]
 python3 precision_anc/live_tablet_server.py   # then open http://localhost:8080
 # Tablet on the same Wi-Fi: add --host 0.0.0.0 (no authentication; trusted networks only)
 ```
 
+## Virtual Teensy (no board needed)
+
+`--port virtual` compiles the unmodified `window_anc_fxlms.ino` for your computer against small stand-ins for the Teensy libraries and runs its 4,000 Hz interrupt in real time. Every serial command (`params`, `set`, `calibrate`, `measure`) talks to the firmware's real code, so protocol bugs show up without hardware. It found one: `calibrate` used to start a calibration through the single-key `c` shortcut and then answer `@ERR unknown command`. That is now fixed.
+
+It cannot tell you how fast the firmware is on a Teensy, because your computer's speed says nothing about a 600 MHz Cortex-M7. Its cycle counter reports an **assumed** ISR time (`--virtual-isr-us`, default 250 µs, the most the ISR may take without losing a sample). The tool labels that term `ASSUMED` and never gives a passing verdict on it. With the default it prints the worst case for the guide's filters, d_min ≥ 27.97 cm (the DAC and amplifier are still unknown). The microphones hear a toy plant (two tones plus noise through pure delays), so the dB levels it prints say nothing about a real window. `python3 tools/virtual_teensy.py --pty` exposes it as a serial port for other programs. It needs a C++ compiler (on a Mac: `xcode-select --install`).
+
 ## Known limitations
 
 * The acoustic paths, baffle and glass in every simulator are modelled filters, not measurements.
-* The firmware has not been compiled or run on a Teensy in this repo's history of testing; time the ISR (`micros()`) before trusting it.
+* The firmware has not been compiled or run on a Teensy in this repo's history of testing. It does compile and run on a computer (the virtual Teensy), which checks its logic but not its timing.
 * The delay budget is marginal; the analog filter, amplifier and woofer delays must be measured, and the ISR time read from the board (`timing_tool.py measure`, untested against real hardware).
 * Wind noise, multiple noise directions, a moving listener and non-linear speaker behaviour at high excursion are only crudely modelled.
 * Safety: calibration noise and divergence can be loud; start with the amplifier at minimum.

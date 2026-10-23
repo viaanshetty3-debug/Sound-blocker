@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 *.tmp.wav
 *.part
+tools/virtual_teensy/build/
